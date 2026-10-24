@@ -30,64 +30,51 @@ jobs:
           mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
           chmod +x ./sing-box
 
-      - name: 恢复端口（改用段）+ 试续号段
+      - name: 核对规则条数（只读）
         working-directory: fc-private
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, time
+          import json, os
           import firadio_maintain as M
-          from firadio_panel import Panel, PanelError
+          from firadio_panel import Panel
           from firadio_proxy import ProxySession
 
           sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
           sess.start()
           try:
               cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
-                     "proxy": sess.url, "fingerprint": None, "session_file": None,
-                     "port_block_days": 90}
+                     "proxy": sess.url, "fingerprint": None, "session_file": None}
               p = Panel(proxy=sess.url)
               M.login(p, cfg)
-              uuid = p.instances()[0]["uuid"]
+              inst = p.instances()[0]
+              uuid = inst["uuid"]
+              full = p.instance(uuid)
 
-              def mine():
-                  out = []
-                  for b in p.port_blocks()["blocks"]:
-                      for r in (b.get("ports") or []):
-                          if r.get("instance_uuid") == uuid:
-                              out.append((r["protocol"], r["port"], r.get("span", 1)))
-                  return sorted(out, key=lambda x: x[1])
+              nat = full.get("nat") or []
+              print("=== instance.nat（真正的映射规则）===")
+              for r in nat:
+                  span = r.get("span", 1)
+                  print("  %s  %s%s  -> 同号  规则 1 条"
+                        % (r.get("protocol"), r.get("port"),
+                           "-%d" % (r["port"] + span - 1) if span > 1 else ""))
+              print("  规则条数 %d / max_ports %s" % (len(nat), full.get("max_ports")))
 
-              print("=== 现在（应为空，刚才拆光了）===")
-              print("  %s  空闲 %s" % (mine(), p.free_ports(uuid).get("total")))
+              print("\n=== 号段里的端口展开（API 会按端口摊平）===")
+              for b in p.port_blocks()["blocks"]:
+                  rows = [r for r in (b.get("ports") or [])
+                          if r.get("instance_uuid") == uuid]
+                  if rows:
+                      print("  号段 %s：%s" % (b["id"],
+                            sorted((r["protocol"], r["port"]) for r in rows)))
 
-              print("\n=== 用段恢复：TCP 5 + UDP 2 ===")
-              done = M.add_ports(p, uuid, 5, 2,
-                                 prefer=M.stable_port_candidates(p))
-              time.sleep(2)
-
-              print("\n=== 结果 ===")
-              after = mine()
-              for proto, port, span in after:
-                  print("  %s %s%s" % (proto, port,
-                                       "-%d" % (port + span - 1) if span > 1 else ""))
-              print("  规则条数 %s / max_ports %s，空闲端口 %s"
-                    % (len(after), p.instance(uuid).get("max_ports"),
-                       p.free_ports(uuid).get("total")))
-
-              print("\n=== 号段续费（真实试一次）===")
-              out = M.renew_port_blocks(p, cfg, dry_run=False)
-              print("  renew_port_blocks 返回：%s" % out)
-
-              b13 = [b for b in p.port_blocks()["blocks"] if b["id"] == 13][0]
-              print("  号段 13 现在付到：%s" % b13["paid_until"])
-              try:
-                  r = p.port_block_renew(13, 1)
-                  print("  手动续 1 个月成功：%s" % json.dumps(r, ensure_ascii=False)[:300])
-                  b13 = [b for b in p.port_blocks()["blocks"] if b["id"] == 13][0]
-                  print("  新的 paid_until：%s" % b13["paid_until"])
-              except PanelError as e:
-                  print("  手动续 1 个月失败：%s" % e)
+              print("\n=== 续费状态 ===")
+              for b in p.port_blocks()["blocks"]:
+                  if b.get("paid_until"):
+                      t = p.port_block_renew_terms(b["id"])
+                      print("  号段 %s 付到 %s，续费 %s/月，最多可续 %s 个月"
+                            % (b["id"], b["paid_until"], M.money(t["monthly"], {}),
+                               t["can_renew"]))
           finally:
               sess.stop()
           PY
