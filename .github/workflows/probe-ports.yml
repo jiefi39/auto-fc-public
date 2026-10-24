@@ -33,7 +33,7 @@ jobs:
           chmod +x ./sing-box
           ./sing-box version | head -1
 
-      - name: 探查端口
+      - name: 清理测试端口
         working-directory: fc-private
         run: |
           set -euo pipefail
@@ -45,52 +45,26 @@ jobs:
 
           sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
           sess.start()
-          print("代理就绪：%s  出口 IP：%s" % (sess.url, sess.exit_ip))
           try:
               cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
                      "proxy": sess.url, "fingerprint": None, "session_file": None}
               p = Panel(proxy=sess.url)
               M.login(p, cfg)
-
               uuid = p.instances()[0]["uuid"]
-              full = p.instance(uuid)
 
-              print("\n=== 实例关键字段 ===")
-              for k in ("name", "port_start", "port_end", "max_ports", "port_domain",
-                        "port_blocks", "host", "status"):
-                  print("  %-12s %s" % (k, json.dumps(full.get(k), ensure_ascii=False)[:400]))
-
-              print("\n=== 号段（完整）===")
-              print(json.dumps(p.port_blocks(), ensure_ascii=False, indent=1)[:4000])
-
-              print("\n=== 空闲端口（前后对比）===")
-              before = p.free_ports(uuid).get("total")
-              print("  加映射前 total=%s" % before)
-
-              print("\n=== 实测：显式指定 13000 ===")
-              try:
-                  r = p.add_port(uuid, target_port=0, port=13000, protocol="tcp", count=1)
-                  print("  加成功：%s" % json.dumps(r, ensure_ascii=False)[:300])
-                  time.sleep(2)
-                  after = p.free_ports(uuid).get("total")
-                  print("  加映射后 total=%s（应少 1）" % after)
-                  got = p.free_ports(uuid, q="13000").get("ports") or []
-                  print("  再搜 13000 → %s（应搜不到）" % got)
-              finally:
+              print("清理前 total=%s" % p.free_ports(uuid).get("total"))
+              for domain in (1, 0):
                   try:
-                      p.remove_port(uuid, 13000)
-                      print("  已删除测试映射 13000")
+                      p.remove_port(uuid, 13000, domain=domain)
+                      print("  已删除 13000（domain=%d）" % domain)
+                      break
                   except Exception as e:
-                      print("  删除失败（要手工清）：%s" % e)
-                  time.sleep(2)
-                  back = p.free_ports(uuid).get("total")
-                  print("  清理后 total=%s（应回到 %s）" % (back, before))
-                  print("  再搜 13000 → %s（应又出现）"
-                        % (p.free_ports(uuid, q="13000").get("ports") or []))
-
-              print("\n=== 结论用数据 ===")
-              print("  13000 在空闲列表里：", 13000 in (p.free_ports(uuid, "", 0).get("ports") or []))
-              print("  10090 在空闲列表里：", 10090 in (p.free_ports(uuid, "", 0).get("ports") or []))
+                      print("  domain=%d 删不掉：%s" % (domain, e))
+              time.sleep(2)
+              print("清理后 total=%s（109 = 干净）" % p.free_ports(uuid).get("total"))
+              print("  再搜 13000 → %s" % (p.free_ports(uuid, q="13000").get("ports") or []))
+              full = p.instance(uuid)
+              print("  max_ports=%s" % full.get("max_ports"))
           finally:
               sess.stop()
           PY
