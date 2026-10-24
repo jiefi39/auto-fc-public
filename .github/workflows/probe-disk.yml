@@ -1,0 +1,77 @@
+name: 🔍 数据盘条款（临时）
+on:
+  workflow_dispatch:
+    inputs:
+      acct:
+        description: "账号"
+        type: choice
+        options: [1, 2]
+        default: "2"
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PROXY_CONTENT: ${{ secrets.HY2_PROXY_URL }}
+      PRIVATE_REPO: jyucoeng/fc-private
+      REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+    steps:
+      - name: 检出私有仓库
+        run: |
+          set -euo pipefail
+          auth=$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+            clone --depth 1 "https://github.com/${PRIVATE_REPO}.git" fc-private
+
+      - name: 装 sing-box
+        working-directory: fc-private
+        run: |
+          set -euo pipefail
+          SB_VER="1.13.14"
+          wget -q "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-amd64.tar.gz"
+          tar -xzf "sing-box-${SB_VER}-linux-amd64.tar.gz" -C /tmp/
+          mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
+          chmod +x ./sing-box
+
+      - name: 打印数据盘条款（只读）
+        working-directory: fc-private
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          import firadio_maintain as M
+          from firadio_panel import Panel, PanelError
+          from firadio_proxy import ProxySession
+
+          which = os.environ["ACCT"]
+          user = os.environ["FC_USER"] if which == "1" else os.environ["FC_USER_2"]
+          pwd = os.environ["FC_PASS"] if which == "1" else os.environ["FC_PASS_2"]
+          print("账号：%s" % which)
+
+          sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
+          sess.start()
+          try:
+              p = Panel(proxy=sess.url)
+              M.login(p, {"user": user, "password": pwd})
+              d = p.get("/disks")
+              print("=== GET /disks 顶层键：%s" % (list(d.keys()) if isinstance(d, dict) else type(d)))
+              print(json.dumps(d, ensure_ascii=False, indent=2)[:3000])
+              disks = (d.get("disks") if isinstance(d, dict) else d) or []
+              for disk in disks:
+                  did = disk.get("id")
+                  print("\n=== 盘 %s 续费条款 ===" % did)
+                  try:
+                      print(json.dumps(p.get("/disks/%s/renew-terms" % did),
+                                       ensure_ascii=False, indent=2)[:1500])
+                  except PanelError as e:
+                      print("  条款失败：%s" % e)
+          finally:
+              sess.stop()
+          PY
+        env:
+          ACCT: ${{ inputs.acct }}
+          FC_USER: ${{ secrets.FC_USER }}
+          FC_PASS: ${{ secrets.FC_PASS }}
+          FC_USER_2: ${{ secrets.FC_USER_2 }}
+          FC_PASS_2: ${{ secrets.FC_PASS_2 }}
