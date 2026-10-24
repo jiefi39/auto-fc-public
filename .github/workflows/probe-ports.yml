@@ -30,12 +30,12 @@ jobs:
           mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
           chmod +x ./sing-box
 
-      - name: 把端口迁到账号级号段
+      - name: 核对并清理残留映射
         working-directory: fc-private
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, time
+          import json, os, time
           import firadio_maintain as M
           from firadio_panel import Panel, PanelError
           from firadio_proxy import ProxySession
@@ -48,23 +48,28 @@ jobs:
               p = Panel(proxy=sess.url)
               M.login(p, cfg)
               uuid = p.instances()[0]["uuid"]
-              full = p.instance(uuid)
-              print("实例 %s  max_ports=%s" % (full.get("name"), full.get("max_ports")))
 
-              # 当前映射：从号段的 ports 里读（绑实例号段 11 上挂着 10091-10097）
-              old = []
-              for b in (p.port_blocks().get("blocks") or []):
-                  for one in (b.get("ports") or []):
-                      if one.get("instance_uuid") == uuid:
-                          old.append((one["protocol"], one["port"]))
-              print("当前映射：%s" % old)
+              data = p.port_blocks()
+              print("=== 号段里挂在这台实例上的端口 ===")
+              mine = []
+              for b in (data.get("blocks") or []):
+                  rows = b.get("ports") or []
+                  hit = [r for r in rows if r.get("instance_uuid") == uuid]
+                  print("  号段 %s  %s-%s  free=%s  本实例 %d 条%s"
+                        % (b.get("id"), b.get("start"),
+                           int(b.get("start")) + int(b.get("size")) - 1,
+                           b.get("free"), len(hit),
+                           ("  " + str([(r["protocol"], r["port"]) for r in hit])) if hit else ""))
+                  mine += [(r["protocol"], r["port"]) for r in hit]
 
-              print("\n--- 先删旧的 ---")
-              for proto, port in old:
+              stale = [(pr, po) for pr, po in mine if po < 13000]
+              print("\n本实例共 %d 条映射，其中 13000 以下的残留：%s" % (len(mine), stale))
+
+              for proto, port in stale:
                   for domain in (1, 0):
                       try:
                           p.remove_port(uuid, port, domain=domain)
-                          print("  删 %s:%s ✅" % (proto, port))
+                          print("  删残留 %s:%s ✅" % (proto, port))
                           break
                       except PanelError as e:
                           if domain == 0:
@@ -72,21 +77,17 @@ jobs:
                   time.sleep(0.5)
 
               time.sleep(2)
-              print("  删完空闲端口数：%s" % p.free_ports(uuid).get("total"))
-
-              print("\n--- 用新逻辑重新挂（走的就是 add_ports）---")
-              done = M.add_ports(p, uuid, 5, 2, prefer=M.stable_port_candidates(p))
-
-              time.sleep(2)
-              print("\n=== 结果 ===")
-              now = []
-              for b in (p.port_blocks().get("blocks") or []):
-                  for one in (b.get("ports") or []):
-                      if one.get("instance_uuid") == uuid:
-                          now.append((one["protocol"], one["port"], one.get("target_port")))
-              print("  新映射：%s" % sorted(now, key=lambda x: x[1]))
+              data = p.port_blocks()
+              final = []
+              for b in (data.get("blocks") or []):
+                  for r in (b.get("ports") or []):
+                      if r.get("instance_uuid") == uuid:
+                          final.append((r["protocol"], r["port"], r.get("target_port")))
+              print("\n=== 最终映射（%d 条，max_ports=%s）==="
+                    % (len(final), p.instance(uuid).get("max_ports")))
+              for proto, port, target in sorted(final, key=lambda x: x[1]):
+                  print("  %s  %s -> %s" % (proto, port, target))
               print("  空闲端口数：%s" % p.free_ports(uuid).get("total"))
-              print("  add_ports 返回：%s" % done)
           finally:
               sess.stop()
           PY
