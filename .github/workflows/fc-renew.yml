@@ -161,6 +161,15 @@ jobs:
 
           for key in ("FC_TG_TOKEN", "HY2_PROXY_URL"):
               print("%-20s %s" % (key, "已配置" if os.environ.get(key, "").strip() else "未配置"))
+
+          # 入口自检：确认私有库里的脚本在 runner 上起得来（只跑 --help，不登录不联网）
+          import subprocess
+          r = subprocess.run([sys.executable, "fc.py", "--help"],
+                             capture_output=True, text=True)
+          if r.returncode != 0:
+              raise SystemExit("fc.py --help 失败：%s" % (r.stderr or r.stdout)[:400])
+          print("入口自检：fc.py --help OK")
+
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write("has_creds=true\n")
           PY
