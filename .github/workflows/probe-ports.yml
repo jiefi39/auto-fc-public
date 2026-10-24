@@ -32,10 +32,6 @@ jobs:
           mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
           chmod +x ./sing-box
           ./sing-box version | head -1
-          python3 firadio_proxy.py --content "$PROXY_CONTENT" --port 10808 --out /tmp/sb.json
-          nohup ./sing-box run -c /tmp/sb.json > /tmp/sb.log 2>&1 &
-          sleep 6
-          curl -s -m 20 -x http://127.0.0.1:10808 https://api.ipify.org && echo "  ← 代理出口 IP"
 
       - name: 探查端口
         working-directory: fc-private
@@ -45,8 +41,12 @@ jobs:
           import json, os
           import firadio_maintain as M
           from firadio_panel import Panel, API_CONSOLE
+          from firadio_proxy import ProxySession
 
-          proxy = "http://127.0.0.1:10808"
+          sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
+          sess.start()
+          print("代理就绪：%s  出口 IP：%s" % (sess.url, sess.exit_ip))
+          proxy = sess.url
           cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
                  "proxy": proxy, "fingerprint": None, "session_file": None}
           p = Panel(proxy=proxy)
@@ -99,4 +99,5 @@ jobs:
           print("  ", allp[:120])
           print("  历史端口 13131-13137 在里面吗：",
                 [x for x in range(13131, 13138) if x in allp] or "一个都不在")
+          sess.stop()
           PY
