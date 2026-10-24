@@ -21,7 +21,7 @@ Settings → Secrets and variables → Actions：
 
 | Secret | 必填 | 说明 |
 | --- | --- | --- |
-| `PRIVATE_REPO_TOKEN` | ✅ | 有 `fc-private` 读权限的 PAT（fine-grained: Contents = Read） |
+| `PRIVATE_SSH_KEY` | ✅ | `fc-private` 只读部署密钥的私钥（Settings → Deploy keys 里那把公钥对应的私钥） |
 | `FIRADIO_ACCOUNTS` | ✅ 二选一 | `accounts.json` 压成一行的 JSON |
 | `FIRADIO_USER` / `FIRADIO_PASS` | ✅ 二选一 | 单账号时用 |
 | `FIRADIO_TG_TOKEN` | 可选 | Telegram Bot Token，不配就不发报告 |

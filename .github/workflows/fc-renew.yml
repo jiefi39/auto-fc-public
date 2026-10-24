@@ -19,7 +19,7 @@
 #    `on.schedule` 删掉或改成只留 workflow_dispatch，否则一天会登录两次。
 #
 # 需要配置的 Secrets（公开仓库 → Settings → Secrets and variables → Actions）：
-#   PRIVATE_REPO_TOKEN   有 fc-private 读权限的 PAT
+#   PRIVATE_SSH_KEY      fc-private 的只读部署密钥（deploy key）私钥
 #   FIRADIO_ACCOUNTS     accounts.json 压成一行的 JSON（多账号，推荐）
 #   或 FIRADIO_USER / FIRADIO_PASS（单账号）
 #   FIRADIO_TG_TOKEN     Telegram Bot Token（可选，不配就不发报告）
@@ -91,16 +91,30 @@ jobs:
         uses: actions/checkout@v7
 
       - name: 检出私有仓库
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ env.PRIVATE_REPO }}
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          ref: main
-          path: ${{ env.PROJECT_DIR }}
-          fetch-depth: 1
-          # token 不落盘：私有库是检出在公开库工作区内部的，一旦写进 .git/config
-          # 就有被后续步骤或误提交带出去的风险。
-          persist-credentials: false
+        env:
+          DEPLOY_KEY: ${{ secrets.PRIVATE_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_KEY:-}" ]; then
+            echo "::error::没有 PRIVATE_SSH_KEY，无法检出私有仓库"
+            exit 1
+          fi
+
+          # 用只读部署密钥检出：权限只有「读这一个仓库」，不过期，
+          # 比 PAT 小得多（PAT 是整个账号的 repo 权限）。
+          key="$RUNNER_TEMP/fc_deploy_key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+          GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
+            git clone --depth 1 "git@github.com:${PRIVATE_REPO}.git" "$PROJECT_DIR"
+
+          # 别让密钥留在 .git/config 里（私有库是检出在公开库工作区内部的）
+          git -C "$PROJECT_DIR" remote set-url origin "https://github.com/${PRIVATE_REPO}.git"
+          rm -f "$key"
 
       - name: 校验凭据
         id: check
