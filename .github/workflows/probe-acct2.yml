@@ -1,0 +1,75 @@
+name: 🔍 账号2 状态（临时）
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      FC_USER: ${{ secrets.FC_USER_2 }}
+      FC_PASS: ${{ secrets.FC_PASS_2 }}
+      PROXY_CONTENT: ${{ secrets.HY2_PROXY_URL }}
+      PRIVATE_REPO: jyucoeng/fc-private
+      REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+    steps:
+      - name: 检出私有仓库
+        run: |
+          set -euo pipefail
+          auth=$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+            clone --depth 1 "https://github.com/${PRIVATE_REPO}.git" fc-private
+
+      - name: 装 sing-box
+        working-directory: fc-private
+        run: |
+          set -euo pipefail
+          SB_VER="1.13.14"
+          wget -q "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-amd64.tar.gz"
+          tar -xzf "sing-box-${SB_VER}-linux-amd64.tar.gz" -C /tmp/
+          mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
+          chmod +x ./sing-box
+
+      - name: 只读体检
+        working-directory: fc-private
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          import firadio_maintain as M
+          from firadio_panel import Panel
+          from firadio_proxy import ProxySession
+
+          sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
+          sess.start()
+          try:
+              cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
+                     "proxy": sess.url, "fingerprint": None, "session_file": None}
+              p = Panel(proxy=sess.url)
+              me = M.login(p, cfg)
+              insts = p.instances()
+              print("实例数：%d" % len(insts))
+              for i in insts:
+                  full = p.instance(i["uuid"])
+                  print("  %s (%s) status=%s 规格=%s 到期=%s"
+                        % (full.get("name"), full.get("uuid"), full.get("status"),
+                           M.spec_label(full),
+                           (full.get("subscription") or {}).get("paid_until")))
+                  for r in (full.get("nat") or []):
+                      span = r.get("span", 1)
+                      print("      %s %s%s" % (r.get("protocol"), r.get("port"),
+                                               "-%d" % (r["port"] + span - 1) if span > 1 else ""))
+
+              print("\n号段：")
+              for b in p.port_blocks().get("blocks") or []:
+                  print("  id=%s %s-%s size=%s free=%s status=%s paid_until=%s ranges=%s"
+                        % (b.get("id"), b.get("start"),
+                           int(b.get("start")) + int(b.get("size")) - 1, b.get("size"),
+                           b.get("free"), b.get("status"), b.get("paid_until"),
+                           b.get("ranges")))
+              print("\n账号级号段候选（stable_port_candidates 前 5 个）：%s"
+                    % M.stable_port_candidates(p)[:5])
+              print("账号级号段（stable_port_blocks）：%s" % M.stable_port_blocks(p))
+          finally:
+              sess.stop()
+          PY
