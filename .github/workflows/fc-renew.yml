@@ -130,8 +130,12 @@ jobs:
           print("入口自检：fc.py --help OK")
 
           # 先把「配了什么」打出来 —— 只保活模式下也要能看到
-          for key in ("FC_TG_TOKEN", "HY2_PROXY_URL"):
-              print("%-20s %s" % (key, "已配置" if os.environ.get(key, "").strip() else "未配置"))
+          # 注意：Secret 名和进程里的环境变量名不一定一样
+          #   HY2_PROXY_URL（Secret） → PROXY_CONTENT（环境变量）
+          for secret_name, env_name in (("FC_TG_TOKEN", "FC_TG_TOKEN"),
+                                        ("HY2_PROXY_URL", "PROXY_CONTENT")):
+              print("%-20s %s" % (secret_name,
+                                  "已配置" if os.environ.get(env_name, "").strip() else "未配置"))
 
           acc = os.environ.get("FC_ACCOUNTS", "").strip()
           user = os.environ.get("FC_USER", "").strip()
