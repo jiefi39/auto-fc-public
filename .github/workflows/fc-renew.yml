@@ -11,25 +11,23 @@
 #      才动手；cron 表达不了「每 29 天」，所以靠每天检查 + 到期判断。
 #   3. **登录代理**：面板对来源 IP 敏感，PROXY_CONTENT 交给私有库里的
 #      gen_singbox_config.py + sing-box 起本地 mixed 端口，登录走它出去。
-#   4. **TG 报告在脚本里发**：firadio_notify.py 每个账号跑完发一条，
+#   4. **TG 报告在脚本里发**：私有库里的通知模块每个账号跑完发一条，
 #      所以 workflow 这边不需要额外的通知步骤。
 #
-# ⚠️ 同一个仓库里只该有一份在跑。私有库 fc-private 自己也有一份
-#    .github/workflows/firadio.yml（同样的 cron）。启用本文件后，请把私有库那份的
-#    `on.schedule` 删掉或改成只留 workflow_dispatch，否则一天会登录两次。
+# 私有库里不含任何 workflow —— 本文件是唯一跑定时任务的地方。
 #
 # 需要配置的 Secrets（公开仓库 → Settings → Secrets and variables → Actions）：
 #   PRIVATE_SSH_KEY      fc-private 的只读部署密钥（deploy key）私钥
-#   FIRADIO_ACCOUNTS     accounts.json 压成一行的 JSON（多账号，推荐）
-#   或 FIRADIO_USER / FIRADIO_PASS（单账号）
-#   FIRADIO_TG_TOKEN     Telegram Bot Token（可选，不配就不发报告）
-#   FIRADIO_TG_CHAT      Telegram chat id（可选，多个用逗号分隔）
+#   FC_ACCOUNTS          accounts.json 压成一行的 JSON（多账号，推荐）
+#   或 FC_USER / FC_PASS（单账号）
+#   FC_TG_TOKEN          Telegram Bot Token（可选，不配就不发报告）
+#   FC_TG_CHAT           Telegram chat id（可选，多个用逗号分隔）
 #   HY2_PROXY_URL    节点 URL：hy2:// vless:// trojan:// ss:// tuic:// anytls://
 #                        （可选，不配就直连）
 #
 # Variables（可选）：
-#   FIRADIO_INTERVAL_DAYS  默认 29
-#   FIRADIO_DUE_DAYS       默认 2（→ 开通第 29 天动手）
+#   FC_INTERVAL_DAYS       默认 29
+#   FC_DUE_DAYS            默认 2（→ 开通第 29 天动手）
 # =============================================================================
 
 name: 🔄 FC 实例重建 ①
@@ -69,18 +67,18 @@ jobs:
       cancel-in-progress: false
     env:
       # ── 凭据 ──────────────────────────────────────────────────────────
-      FIRADIO_ACCOUNTS: ${{ secrets.FIRADIO_ACCOUNTS }}
-      FIRADIO_USER: ${{ secrets.FIRADIO_USER }}
-      FIRADIO_PASS: ${{ secrets.FIRADIO_PASS }}
+      FC_ACCOUNTS: ${{ secrets.FC_ACCOUNTS }}
+      FC_USER: ${{ secrets.FC_USER }}
+      FC_PASS: ${{ secrets.FC_PASS }}
       # ── 通知 ──────────────────────────────────────────────────────────
-      FIRADIO_TG_TOKEN: ${{ secrets.FIRADIO_TG_TOKEN }}
-      FIRADIO_TG_CHAT: ${{ secrets.FIRADIO_TG_CHAT }}
+      FC_TG_TOKEN: ${{ secrets.FC_TG_TOKEN }}
+      FC_TG_CHAT: ${{ secrets.FC_TG_CHAT }}
       # ── 登录代理 ──────────────────────────────────────────────────────
       PROXY_CONTENT: ${{ secrets.HY2_PROXY_URL }}
       SOCKS_PORT: '10808'
       # ── 周期 ──────────────────────────────────────────────────────────
-      FIRADIO_INTERVAL_DAYS: ${{ vars.FIRADIO_INTERVAL_DAYS || '29' }}
-      FIRADIO_DUE_DAYS: ${{ vars.FIRADIO_DUE_DAYS || '2' }}
+      FC_INTERVAL_DAYS: ${{ vars.FC_INTERVAL_DAYS || '29' }}
+      FC_DUE_DAYS: ${{ vars.FC_DUE_DAYS || '2' }}
       # ── 私有仓库 ──────────────────────────────────────────────────────
       PRIVATE_REPO: jyucoeng/fc-private
       PROJECT_DIR: fc-private
@@ -123,9 +121,9 @@ jobs:
           python3 - <<'PY'
           import json, os, sys
 
-          acc = os.environ.get("FIRADIO_ACCOUNTS", "").strip()
-          user = os.environ.get("FIRADIO_USER", "").strip()
-          pwd = os.environ.get("FIRADIO_PASS", "").strip()
+          acc = os.environ.get("FC_ACCOUNTS", "").strip()
+          user = os.environ.get("FC_USER", "").strip()
+          pwd = os.environ.get("FC_PASS", "").strip()
 
           def mask(s):
               local = s.split("@")[0]
@@ -135,10 +133,10 @@ jobs:
               try:
                   data = json.loads(acc)
               except json.JSONDecodeError as e:
-                  raise SystemExit("FIRADIO_ACCOUNTS 不是合法 JSON：%s" % e)
+                  raise SystemExit("FC_ACCOUNTS 不是合法 JSON：%s" % e)
               accounts = data.get("accounts") if isinstance(data, dict) else data
               if not isinstance(accounts, list) or not accounts:
-                  raise SystemExit("FIRADIO_ACCOUNTS 必须是非空数组（或 {\"accounts\": [...]}）")
+                  raise SystemExit("FC_ACCOUNTS 必须是非空数组（或 {\"accounts\": [...]}）")
               names = []
               for i, item in enumerate(accounts, 1):
                   if not isinstance(item, dict):
@@ -161,7 +159,7 @@ jobs:
                   fh.write("has_creds=false\n")
               raise SystemExit(0)
 
-          for key in ("FIRADIO_TG_TOKEN", "HY2_PROXY_URL"):
+          for key in ("FC_TG_TOKEN", "HY2_PROXY_URL"):
               print("%-20s %s" % (key, "已配置" if os.environ.get(key, "").strip() else "未配置"))
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write("has_creds=true\n")
@@ -204,7 +202,7 @@ jobs:
         run: |
           set -euo pipefail
           ARGS="--phase ${{ inputs.phase || 'auto' }}"
-          if [ -n "${FIRADIO_ACCOUNTS:-}" ]; then
+          if [ -n "${FC_ACCOUNTS:-}" ]; then
             ARGS="$ARGS --all"
           fi
           if [ "${{ inputs.force }}" != "true" ]; then
@@ -216,8 +214,8 @@ jobs:
 
           # 不要用 `python3 ... | tee log`：管道里 $! 是 tee 的 PID，
           # 退出码永远是 0，脚本失败会被吞掉。重定向 + wait 真实 PID。
-          echo "运行：python3 firadio_maintain.py $ARGS"
-          python3 -u firadio_maintain.py $ARGS > firadio.log 2>&1 &
+          echo "运行：python3 fc.py $ARGS"
+          python3 -u fc.py $ARGS > fc.log 2>&1 &
           pid=$!
           while kill -0 "$pid" 2>/dev/null; do
             echo "[HEARTBEAT] 仍在运行: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -226,15 +224,15 @@ jobs:
           status=0
           wait "$pid" || status=$?
           echo "---- 退出码: ${status} ----"
-          tail -n 80 firadio.log || true
+          tail -n 80 fc.log || true
           exit "$status"
 
       - name: 上传日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: firadio-log-${{ github.run_id }}
-          path: ${{ env.PROJECT_DIR }}/firadio.log
+          name: fc-log-${{ github.run_id }}
+          path: ${{ env.PROJECT_DIR }}/fc.log
           retention-days: 7
           if-no-files-found: warn
 
