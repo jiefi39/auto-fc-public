@@ -129,6 +129,10 @@ jobs:
               raise SystemExit("fc.py --help 失败：%s" % (r.stderr or r.stdout)[:400])
           print("入口自检：fc.py --help OK")
 
+          # 先把「配了什么」打出来 —— 只保活模式下也要能看到
+          for key in ("FC_TG_TOKEN", "HY2_PROXY_URL"):
+              print("%-20s %s" % (key, "已配置" if os.environ.get(key, "").strip() else "未配置"))
+
           acc = os.environ.get("FC_ACCOUNTS", "").strip()
           user = os.environ.get("FC_USER", "").strip()
           pwd = os.environ.get("FC_PASS", "").strip()
@@ -166,9 +170,6 @@ jobs:
               with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
                   fh.write("has_creds=false\n")
               raise SystemExit(0)
-
-          for key in ("FC_TG_TOKEN", "HY2_PROXY_URL"):
-              print("%-20s %s" % (key, "已配置" if os.environ.get(key, "").strip() else "未配置"))
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write("has_creds=true\n")
