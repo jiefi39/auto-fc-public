@@ -30,12 +30,12 @@ jobs:
           mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
           chmod +x ./sing-box
 
-      - name: 只看不写：续费条款 + 分段预览
+      - name: 续费条款 + 分段映射实测
         working-directory: fc-private
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os
+          import json, os, time
           import firadio_maintain as M
           from firadio_panel import Panel, PanelError
           from firadio_proxy import ProxySession
@@ -49,33 +49,72 @@ jobs:
               M.login(p, cfg)
               uuid = p.instances()[0]["uuid"]
 
-              def raw(path, method="GET", body=None):
-                  data = None if body is None else json.dumps(body).encode()
-                  req = p._req(method, p.base + path, data)
-                  try:
-                      with p.opener.open(req, timeout=30) as r:
-                          return json.loads(r.read().decode("utf-8", "replace"))
-                  except urllib.error.HTTPError as e:
-                      return {"__http__": e.code, "__body__": e.read()[:200].decode("utf-8", "replace")}
-
-              import urllib.error
-              print("=== 号段列表 ===")
-              for b in p.port_blocks()["blocks"]:
+              print("=== 号段 ===")
+              blocks = p.port_blocks()["blocks"]
+              for b in blocks:
                   print("  id=%s %s-%s free=%s status=%s paid_until=%s used=%s"
                         % (b["id"], b["start"], int(b["start"]) + int(b["size"]) - 1,
                            b["free"], b["status"], b["paid_until"], b["used"]))
 
               print("\n=== 续费条款 ===")
-              for bid in [b["id"] for b in p.port_blocks()["blocks"]]:
-                  print("  block %s renew-terms ->" % bid,
-                        json.dumps(raw("/api/panel/console/port-blocks/%s/renew-terms" % bid),
-                                   ensure_ascii=False)[:600])
+              for b in blocks:
+                  try:
+                      t = p.port_block_renew_terms(b["id"])
+                      print("  block %s -> %s" % (b["id"], json.dumps(t, ensure_ascii=False)[:500]))
+                  except PanelError as e:
+                      print("  block %s 取不到：%s" % (b["id"], e))
 
-              print("\n=== port-run 预览（13000 起 5 个 / 13005 起 2 个）===")
+              print("\n=== port-run 预览 ===")
               for start, count in ((13000, 5), (13005, 2)):
-                  print("  from=%s count=%s ->" % (start, count),
-                        json.dumps(raw("/api/panel/console/instances/%s/port-run?from=%s&count=%s"
-                                       % (uuid, start, count)), ensure_ascii=False)[:400])
+                  try:
+                      print("  from=%s count=%s -> %s" % (start, count, json.dumps(
+                          p.port_run(uuid, start, count), ensure_ascii=False)[:300]))
+                  except PanelError as e:
+                      print("  from=%s count=%s 失败：%s" % (start, count, e))
+
+              print("\n=== 当前映射 ===")
+              def mine():
+                  out = []
+                  for b in p.port_blocks()["blocks"]:
+                      for r in (b.get("ports") or []):
+                          if r.get("instance_uuid") == uuid:
+                              out.append((b["id"], r["protocol"], r["port"], r.get("span", 1)))
+                  return sorted(out, key=lambda x: x[2])
+              before = mine()
+              print("  %s" % before)
+
+              print("\n=== 逐端口 -> 分段：先拆后合 ===")
+              for bid, proto, port, span in before:
+                  try:
+                      p.remove_port(uuid, port, domain=1, span=span)
+                      print("  拆 %s:%s span=%s ✅" % (proto, port, span))
+                  except PanelError as e:
+                      print("  拆 %s:%s 失败：%s" % (proto, port, e))
+                  time.sleep(0.4)
+              time.sleep(2)
+
+              tcp_start, tcp_n = 13000, 5
+              udp_start, udp_n = 13005, 2
+              block_id = [b["id"] for b in p.port_blocks()["blocks"]
+                          if not b.get("ranges") and int(b["start"]) <= tcp_start][0]
+              for proto, start, n in (("tcp", tcp_start, tcp_n), ("udp", udp_start, udp_n)):
+                  try:
+                      r = p.map_block(uuid, block_id, proto, [{"start": start, "span": n}])
+                      print("  段映射 %s %s-%s ✅ %s"
+                            % (proto, start, start + n - 1, json.dumps(r, ensure_ascii=False)[:200]))
+                  except PanelError as e:
+                      print("  段映射 %s %s-%s 失败：%s" % (proto, start, start + n - 1, e))
+                  time.sleep(1)
+
+              time.sleep(2)
+              print("\n=== 结果 ===")
+              after = mine()
+              for bid, proto, port, span in after:
+                  print("  %s  %s  %s-%s（%s 个端口）"
+                        % (proto, port, port, port + span - 1 if span > 1 else port, span))
+              print("  规则条数：%s（max_ports=%s）"
+                    % (len(after), p.instance(uuid).get("max_ports")))
+              print("  空闲端口数：%s" % p.free_ports(uuid).get("total"))
           finally:
               sess.stop()
           PY
