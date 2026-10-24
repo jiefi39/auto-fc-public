@@ -51,10 +51,13 @@ jobs:
               print("实例数：%d" % len(insts))
               for i in insts:
                   full = p.instance(i["uuid"])
-                  print("  %s (%s) status=%s 规格=%s 到期=%s"
-                        % (full.get("name"), full.get("uuid"), full.get("status"),
-                           M.spec_label(full),
-                           (full.get("subscription") or {}).get("paid_until")))
+                  sub = full.get("subscription") or {}
+                  print("  %s (%s) status=%s" % (full.get("name"), full.get("uuid"),
+                                                 full.get("status")))
+                  print("      规格：spec_label(inst)=%r  spec_label(inst,sub)=%r  sub.spec_name=%r"
+                        % (M.spec_label(full), M.spec_label(full, sub),
+                           sub.get("spec_name")))
+                  print("      到期：%s" % sub.get("paid_until"))
                   for r in (full.get("nat") or []):
                       span = r.get("span", 1)
                       print("      %s %s%s" % (r.get("protocol"), r.get("port"),
