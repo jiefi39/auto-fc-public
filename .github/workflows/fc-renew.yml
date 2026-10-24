@@ -20,12 +20,11 @@
 #
 # 结构
 #   公开仓库只放 workflow + 时间文件，代码在私有仓库 jyucoeng/fc-private，
-#   运行时用 PRIVATE_REPO_TOKEN（或 PRIVATE_SSH_KEY）检出到工作区子目录里跑。
+#   运行时用 PRIVATE_REPO_TOKEN 检出到工作区子目录里跑。
 #   私有库里不含任何 workflow —— 定时任务只在这里。
 #
 # Secrets（公开仓库 → Settings → Secrets and variables → Actions）
-#   PRIVATE_REPO_TOKEN   读 fc-private 用的 GitHub token（首选，HTTPS 检出）
-#   PRIVATE_SSH_KEY      fc-private 的只读部署密钥私钥（没配 token 时用）
+#   PRIVATE_REPO_TOKEN   读 fc-private 用的 GitHub token（HTTPS 检出，唯一方式）
 #   FC_USER / FC_PASS    第 1 个账号的用户名（或邮箱）和密码
 #   FC_USER_2 / FC_PASS_2  第 2 个账号；第 3 个就 _3，以此类推
 #   FC_TG_TOKEN          Telegram Bot Token（可选，不配就不发报告）
@@ -104,32 +103,19 @@ jobs:
       - name: 检出私有仓库
         env:
           REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          DEPLOY_KEY: ${{ secrets.PRIVATE_SSH_KEY }}
         run: |
           set -euo pipefail
-          if [ -n "${REPO_TOKEN:-}" ]; then
-            # 首选：token（HTTPS）。权限跟着 token 走，换库/换权限不用动 workflow。
-            echo "检出方式：PRIVATE_REPO_TOKEN（HTTPS）"
-            # token 放 header，不拼进 URL —— 否则 git 报错时会把带 token 的 URL
-            # 原样打到日志里。
-            auth=$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')
-            git -c http.extraheader="AUTHORIZATION: basic $auth" \
-              clone --depth 1 "https://github.com/${PRIVATE_REPO}.git" "$PROJECT_DIR"
-          elif [ -n "${DEPLOY_KEY:-}" ]; then
-            # 备选：只读部署密钥（SSH）。没有 token 时用这个，权限只有读这一个仓库。
-            echo "检出方式：PRIVATE_SSH_KEY（SSH 部署密钥）"
-            key="$RUNNER_TEMP/fc_deploy_key"
-            printf '%s\n' "$DEPLOY_KEY" > "$key"
-            chmod 600 "$key"
-            mkdir -p ~/.ssh && chmod 700 ~/.ssh
-            ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
-            GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
-              git clone --depth 1 "git@github.com:${PRIVATE_REPO}.git" "$PROJECT_DIR"
-            rm -f "$key"
-          else
-            echo "::error::PRIVATE_REPO_TOKEN 和 PRIVATE_SSH_KEY 都没配，无法检出私有仓库"
+          if [ -z "${REPO_TOKEN:-}" ]; then
+            echo "::error::没有 PRIVATE_REPO_TOKEN，无法检出私有仓库"
             exit 1
           fi
+
+          echo "检出方式：PRIVATE_REPO_TOKEN（HTTPS）"
+          # token 放 header，不拼进 URL —— 否则 git 报错时会把带 token 的 URL
+          # 原样打到日志里。
+          auth=$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+            clone --depth 1 "https://github.com/${PRIVATE_REPO}.git" "$PROJECT_DIR"
 
           # 别把凭据留在 .git/config 里（私有库是检出在公开库工作区内部的）
           git -C "$PROJECT_DIR" remote set-url origin "https://github.com/${PRIVATE_REPO}.git"

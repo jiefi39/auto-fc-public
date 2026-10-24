@@ -22,7 +22,6 @@ Settings → Secrets and variables → Actions：
 | Secret | 必填 | 说明 |
 | --- | --- | --- |
 | `PRIVATE_REPO_TOKEN` | ✅ | 能读 `fc-private` 的 GitHub token（`gh auth token` 拿到的 `gho_…` 就行） |
-| `PRIVATE_SSH_KEY` | 备用 | `fc-private` 只读部署密钥的私钥，没配 token 时才用 |
 | `FC_USER` | ✅ | 用户名或邮箱 |
 | `FC_PASS` | ✅ | 密码 |
 | `FC_USER_2` / `FC_PASS_2` | 多账号时 | 第 2 个账号，见下面「多账号」 |
