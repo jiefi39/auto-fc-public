@@ -1,0 +1,289 @@
+# =============================================================================
+# FC 实例自动重建（公开仓库版）
+# -----------------------------------------------------------------------------
+# 结构照 auto_scripts/.github/workflows/hus-renew.yml 抄的：
+#   公开仓库只放 workflow + 时间文件，真正的代码在私有仓库 jyucoeng/fc-private，
+#   运行时用 PRIVATE_REPO_TOKEN 检出到工作区子目录里跑。
+#
+# 和 hus 版的差别（都是因为这个项目本身的特性）：
+#   1. **纯标准库**：没有 requirements.txt，所以跳过 pip install / cache。
+#   2. **每天跑一次 + --if-due**：实例是 30 天周期，脚本自己判断「距到期不足 2 天」
+#      才动手；cron 表达不了「每 29 天」，所以靠每天检查 + 到期判断。
+#   3. **登录代理**：面板对来源 IP 敏感，PROXY_CONTENT 交给私有库里的
+#      gen_singbox_config.py + sing-box 起本地 mixed 端口，登录走它出去。
+#   4. **TG 报告在脚本里发**：firadio_notify.py 每个账号跑完发一条，
+#      所以 workflow 这边不需要额外的通知步骤。
+#
+# ⚠️ 同一个仓库里只该有一份在跑。私有库 fc-private 自己也有一份
+#    .github/workflows/firadio.yml（同样的 cron）。启用本文件后，请把私有库那份的
+#    `on.schedule` 删掉或改成只留 workflow_dispatch，否则一天会登录两次。
+#
+# 需要配置的 Secrets（公开仓库 → Settings → Secrets and variables → Actions）：
+#   PRIVATE_REPO_TOKEN   有 fc-private 读权限的 PAT
+#   FIRADIO_ACCOUNTS     accounts.json 压成一行的 JSON（多账号，推荐）
+#   或 FIRADIO_USER / FIRADIO_PASS（单账号）
+#   FIRADIO_TG_TOKEN     Telegram Bot Token（可选，不配就不发报告）
+#   FIRADIO_TG_CHAT      Telegram chat id（可选，多个用逗号分隔）
+#   FIRADIO_PROXY_URL    节点 URL：hy2:// vless:// trojan:// ss:// tuic:// anytls://
+#                        （可选，不配就直连）
+#
+# Variables（可选）：
+#   FIRADIO_INTERVAL_DAYS  默认 29
+#   FIRADIO_DUE_DAYS       默认 2（→ 开通第 29 天动手）
+# =============================================================================
+
+name: 🔄 FC 实例重建 ①
+
+on:
+  schedule:
+    # UTC 19:23 = 北京时间次日 03:23。避开整点，也避开 hus 系列的 00:07。
+    - cron: '23 19 * * *'
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: "阶段"
+        type: choice
+        options: [auto, open, maintain]
+        default: auto
+      force:
+        description: "忽略到期检查，强制执行"
+        type: boolean
+        default: false
+      dry_run:
+        description: "只体检，不动手"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write     # 最后要提交 time.txt 保活
+  actions: write      # 清理旧运行记录
+
+jobs:
+  renew:
+    runs-on: ubuntu-24.04
+    # 单账号约 3 分钟；多账号线性增长；再加上代理启动与重试，40 分钟够用。
+    timeout-minutes: 40
+    concurrency:
+      group: FC_Renew_1
+      # 手动触发不抢占正在跑的定时任务——那会把正在重建的实例打断在半路。
+      cancel-in-progress: false
+    env:
+      # ── 凭据 ──────────────────────────────────────────────────────────
+      FIRADIO_ACCOUNTS: ${{ secrets.FIRADIO_ACCOUNTS }}
+      FIRADIO_USER: ${{ secrets.FIRADIO_USER }}
+      FIRADIO_PASS: ${{ secrets.FIRADIO_PASS }}
+      # ── 通知 ──────────────────────────────────────────────────────────
+      FIRADIO_TG_TOKEN: ${{ secrets.FIRADIO_TG_TOKEN }}
+      FIRADIO_TG_CHAT: ${{ secrets.FIRADIO_TG_CHAT }}
+      # ── 登录代理 ──────────────────────────────────────────────────────
+      PROXY_CONTENT: ${{ secrets.FIRADIO_PROXY_URL }}
+      SOCKS_PORT: '10808'
+      # ── 周期 ──────────────────────────────────────────────────────────
+      FIRADIO_INTERVAL_DAYS: ${{ vars.FIRADIO_INTERVAL_DAYS || '29' }}
+      FIRADIO_DUE_DAYS: ${{ vars.FIRADIO_DUE_DAYS || '2' }}
+      # ── 私有仓库 ──────────────────────────────────────────────────────
+      PRIVATE_REPO: jyucoeng/fc-private
+      PROJECT_DIR: fc-private
+      TIME_DIR: fc/1
+
+    steps:
+      - name: 检出公开仓库
+        uses: actions/checkout@v7
+
+      - name: 检出私有仓库
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: ${{ env.PROJECT_DIR }}
+          fetch-depth: 1
+          # token 不落盘：私有库是检出在公开库工作区内部的，一旦写进 .git/config
+          # 就有被后续步骤或误提交带出去的风险。
+          persist-credentials: false
+
+      - name: 校验凭据
+        id: check
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          acc = os.environ.get("FIRADIO_ACCOUNTS", "").strip()
+          user = os.environ.get("FIRADIO_USER", "").strip()
+          pwd = os.environ.get("FIRADIO_PASS", "").strip()
+
+          def mask(s):
+              local = s.split("@")[0]
+              return (local[:3] + "***" + local[-3:]) if len(local) > 6 else "***"
+
+          if acc:
+              try:
+                  data = json.loads(acc)
+              except json.JSONDecodeError as e:
+                  raise SystemExit("FIRADIO_ACCOUNTS 不是合法 JSON：%s" % e)
+              accounts = data.get("accounts") if isinstance(data, dict) else data
+              if not isinstance(accounts, list) or not accounts:
+                  raise SystemExit("FIRADIO_ACCOUNTS 必须是非空数组（或 {\"accounts\": [...]}）")
+              names = []
+              for i, item in enumerate(accounts, 1):
+                  if not isinstance(item, dict):
+                      raise SystemExit("第 %d 项不是对象" % i)
+                  u = item.get("user") or item.get("username") or item.get("email")
+                  if not u or not item.get("password"):
+                      raise SystemExit("第 %d 项缺少 user/password" % i)
+                  names.append(str(u))
+              dupes = sorted({n for n in names if names.count(n) > 1})
+              if dupes:
+                  raise SystemExit("账号重复（会被跑两遍）：%s" % ", ".join(dupes))
+              print("多账号模式：%d 个账号（%s）" % (len(names), ", ".join(mask(n) for n in names)))
+          elif user and pwd:
+              print("单账号模式：%s" % mask(user))
+          else:
+              # 没配凭据不报错：这个仓库也可以只当「保活/备份」用，
+              # 那样每天红一次毫无意义。标记一下，跳过运行步骤即可。
+              print("没配凭据 → 本次只保活，不跑维护")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write("has_creds=false\n")
+              raise SystemExit(0)
+
+          for key in ("FIRADIO_TG_TOKEN", "FIRADIO_PROXY_URL"):
+              print("%-20s %s" % (key, "已配置" if os.environ.get(key, "").strip() else "未配置"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("has_creds=true\n")
+          PY
+
+      - name: 设置 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          # 没有 requirements.txt：项目只依赖标准库，所以不装 pip 包、也不用 cache。
+
+      - name: 安装代理（sing-box）
+        if: steps.check.outputs.has_creds == 'true'
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ -z "$PROXY_CONTENT" ]; then
+            echo "[INFO] 未配置 PROXY_CONTENT，直连模式"
+            exit 0
+          fi
+
+          SB_VER="1.13.14"
+          ARCHIVE="sing-box-${SB_VER}-linux-amd64.tar.gz"
+          wget -q "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/${ARCHIVE}"
+          tar -xzf "$ARCHIVE" -C /tmp/
+          mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
+          chmod +x ./sing-box
+          rm -rf "/tmp/sing-box-${SB_VER}-linux-amd64" "$ARCHIVE"
+          echo "[INFO] sing-box $(./sing-box version | head -1)"
+
+      - name: 随机延迟
+        if: steps.check.outputs.has_creds == 'true'
+        run: |
+          delay=$((RANDOM % 120))
+          echo "随机延迟: ${delay}秒"
+          sleep $delay
+
+      - name: 运行
+        if: steps.check.outputs.has_creds == 'true'
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          ARGS="--phase ${{ inputs.phase || 'auto' }}"
+          if [ -n "${FIRADIO_ACCOUNTS:-}" ]; then
+            ARGS="$ARGS --all"
+          fi
+          if [ "${{ inputs.force }}" != "true" ]; then
+            ARGS="$ARGS --if-due"
+          fi
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          # 不要用 `python3 ... | tee log`：管道里 $! 是 tee 的 PID，
+          # 退出码永远是 0，脚本失败会被吞掉。重定向 + wait 真实 PID。
+          echo "运行：python3 firadio_maintain.py $ARGS"
+          python3 -u firadio_maintain.py $ARGS > firadio.log 2>&1 &
+          pid=$!
+          while kill -0 "$pid" 2>/dev/null; do
+            echo "[HEARTBEAT] 仍在运行: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            sleep 15
+          done
+          status=0
+          wait "$pid" || status=$?
+          echo "---- 退出码: ${status} ----"
+          tail -n 80 firadio.log || true
+          exit "$status"
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firadio-log-${{ github.run_id }}
+          path: ${{ env.PROJECT_DIR }}/firadio.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 提交执行时间
+        if: always()
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 每次以最新 origin/main 为基准重建提交，避免并发 run 互相覆盖。
+          for attempt in 1 2 3; do
+            echo "提交执行时间，第 ${attempt}/3 次尝试"
+            git fetch origin refs/heads/main:refs/remotes/origin/main
+            git reset --hard origin/main
+            mkdir -p "${{ env.TIME_DIR }}"
+            date +'%Y-%m-%d %H:%M:%S' > "${{ env.TIME_DIR }}/time.txt"
+            git add "${{ env.TIME_DIR }}/time.txt"
+            git commit -m "更新时间文件: $(date +'%Y-%m-%d %H:%M:%S')"
+            if git push origin HEAD:refs/heads/main; then
+              echo "执行时间已提交"
+              exit 0
+            fi
+            echo "推送发生并发冲突，重新获取远端后重试"
+            git reset --hard origin/main
+            sleep 2
+          done
+          echo "3 次推送均失败"
+          exit 1
+
+      - name: 🧹 清理旧的工作流运行记录
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          current_run="${{ github.run_id }}"
+          cutoff_epoch=$(date -d '24 hours ago' +%s)
+          runs=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit=100 \
+            --json databaseId,createdAt,status \
+            --jq '.[] | [.databaseId, .createdAt, .status] | @tsv' 2>/dev/null)
+          if [ -z "$runs" ]; then
+            echo "没有找到可清理的运行记录"
+            exit 0
+          fi
+
+          to_delete=$(while IFS=$'\t' read -r run_id created_at status; do
+            [ -z "$run_id" ] && continue
+            [ "$run_id" = "$current_run" ] && continue
+            [ "$status" != "completed" ] && continue
+            created_epoch=$(date -d "$created_at" +%s 2>/dev/null || echo 0)
+            [ "$created_epoch" -ge "$cutoff_epoch" ] && continue
+            echo "$run_id"
+          done <<< "$runs")
+
+          if [ -z "$to_delete" ]; then
+            echo "清理完成：没有超过 24 小时的已完成记录"
+            exit 0
+          fi
+
+          count=$(echo "$to_delete" | wc -l | tr -d ' ')
+          echo "待删除 $count 条超过 24 小时的已完成记录（并发 10 路）"
+          echo "$to_delete" | xargs -P 10 -I{} sh -c 'gh run delete "$1" --repo "$2" >/dev/null 2>&1 || true' _ {} "$GITHUB_REPOSITORY"
+          echo "清理完成：保留最近 24 小时记录及所有未完成记录"
