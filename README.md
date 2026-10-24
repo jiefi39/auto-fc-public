@@ -26,7 +26,7 @@ Settings → Secrets and variables → Actions：
 | `FIRADIO_USER` / `FIRADIO_PASS` | ✅ 二选一 | 单账号时用 |
 | `FIRADIO_TG_TOKEN` | 可选 | Telegram Bot Token，不配就不发报告 |
 | `FIRADIO_TG_CHAT` | 可选 | Telegram 会话 id，多个用逗号分隔 |
-| `FIRADIO_PROXY_URL` | 可选 | 登录用的节点 URL（`hy2://` `vless://` `trojan://` `ss://` `tuic://` `anytls://`） |
+| `HY2_PROXY_URL` | 可选 | 登录用的节点 URL（`hy2://` `vless://` `trojan://` `ss://` `tuic://` `anytls://`） |
 
 Variables（可选）：`FIRADIO_INTERVAL_DAYS`（默认 29）、`FIRADIO_DUE_DAYS`（默认 2）。
 

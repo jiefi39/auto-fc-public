@@ -24,7 +24,7 @@
 #   或 FIRADIO_USER / FIRADIO_PASS（单账号）
 #   FIRADIO_TG_TOKEN     Telegram Bot Token（可选，不配就不发报告）
 #   FIRADIO_TG_CHAT      Telegram chat id（可选，多个用逗号分隔）
-#   FIRADIO_PROXY_URL    节点 URL：hy2:// vless:// trojan:// ss:// tuic:// anytls://
+#   HY2_PROXY_URL    节点 URL：hy2:// vless:// trojan:// ss:// tuic:// anytls://
 #                        （可选，不配就直连）
 #
 # Variables（可选）：
@@ -76,7 +76,7 @@ jobs:
       FIRADIO_TG_TOKEN: ${{ secrets.FIRADIO_TG_TOKEN }}
       FIRADIO_TG_CHAT: ${{ secrets.FIRADIO_TG_CHAT }}
       # ── 登录代理 ──────────────────────────────────────────────────────
-      PROXY_CONTENT: ${{ secrets.FIRADIO_PROXY_URL }}
+      PROXY_CONTENT: ${{ secrets.HY2_PROXY_URL }}
       SOCKS_PORT: '10808'
       # ── 周期 ──────────────────────────────────────────────────────────
       FIRADIO_INTERVAL_DAYS: ${{ vars.FIRADIO_INTERVAL_DAYS || '29' }}
@@ -161,7 +161,7 @@ jobs:
                   fh.write("has_creds=false\n")
               raise SystemExit(0)
 
-          for key in ("FIRADIO_TG_TOKEN", "FIRADIO_PROXY_URL"):
+          for key in ("FIRADIO_TG_TOKEN", "HY2_PROXY_URL"):
               print("%-20s %s" % (key, "已配置" if os.environ.get(key, "").strip() else "未配置"))
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write("has_creds=true\n")
