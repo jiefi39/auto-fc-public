@@ -24,6 +24,7 @@ Settings → Secrets and variables → Actions：
 | `PRIVATE_SSH_KEY` | ✅ | `fc-private` 只读部署密钥的私钥（Settings → Deploy keys 里那把公钥对应的私钥） |
 | `FC_USER` | ✅ | 用户名或邮箱 |
 | `FC_PASS` | ✅ | 密码 |
+| `FC_USER_2` / `FC_PASS_2` | 多账号时 | 第 2 个账号，见下面「多账号」 |
 | `FC_TG_TOKEN` | 可选 | Telegram Bot Token，不配就不发报告 |
 | `FC_TG_CHAT` | 可选 | Telegram 会话 id，多个用逗号分隔 |
 | `HY2_PROXY_URL` | 可选 | 登录用的节点 URL（`hy2://` `vless://` `trojan://` `ss://` `tuic://` `anytls://`） |
@@ -49,6 +50,67 @@ Variables（可选）：`FC_INTERVAL_DAYS`（默认 29）、`FC_DUE_DAYS`（默�
 🌐 IP 信息: 185.156.53.*** (UA) [✅ 代理]
 ```
 
+## 多账号：一个账号一份 workflow
+
+不加矩阵、不加脚本参数 —— **复制文件**就行，一个账号一份 workflow，各跑各的。
+
+### 1. 加 Secret
+
+第 2 个账号的凭据，名字加后缀 `_2`：
+
+| Secret | 值 |
+| --- | --- |
+| `FC_USER_2` | 第 2 个账号的用户名（或邮箱） |
+| `FC_PASS_2` | 第 2 个账号的密码 |
+
+第 3 个就 `FC_USER_3` / `FC_PASS_3`，以此类推。
+TG 和代理的 Secret（`FC_TG_TOKEN` / `FC_TG_CHAT` / `HY2_PROXY_URL`）**各账号共用**，不用复制。
+
+### 2. 复制 workflow
+
+```bash
+cp .github/workflows/fc-renew.yml .github/workflows/fc-renew-2.yml
+```
+
+文件里所有要改的地方都标了 `①`～`⑤`，搜 `①` 逐个过一遍：
+
+| 标号 | 位置 | 改成 |
+| --- | --- | --- |
+| ① | `name:` | `🔄 FC 实例重建 ②` |
+| ② | `cron:` | 错开时间，见下表 |
+| ③ | `FC_USER:` | `${{ secrets.FC_USER_2 }}` |
+| ④ | `FC_PASS:` | `${{ secrets.FC_PASS_2 }}` |
+| ⑤ | `TIME_DIR:` | `fc/2` |
+
+`concurrency` **不用改** —— 用的是 `${{ github.workflow }}`，
+复制出来的文件 `name` 不同，天然互斥，不会互相打断。
+
+### 3. 时间怎么错开
+
+cron 是 UTC，+8 小时是北京时间：
+
+| 账号 | `cron` | 北京时间 |
+| --- | --- | --- |
+| ① | `23 19 * * *` | 次日 03:23 |
+| ② | `41 19 * * *` | 次日 03:41 |
+| ③ | `59 19 * * *` | 次日 03:59 |
+
+不用错开也能跑（互斥键是按文件分的，会并行），但错开对面板友好一点。
+
+### 4. 验证
+
+提交后 Actions 左侧会多出一个 `🔄 FC 实例重建 ②`，点进去 Run workflow，
+勾 `dry_run` 跑一次，日志里应该看到：
+
+```
+入口自检：fc.py --help OK
+FC_TG_TOKEN          已配置
+HY2_PROXY_URL        已配置
+账号：l***2
+```
+
+每个账号的 `fc/N/time.txt` 是分开的，一眼能看出哪个账号最后跑过。
+
 ## 只保活、不干活
 
 不配 `FC_*` 凭据就行：「校验凭据」那步会打印
@@ -59,7 +121,7 @@ Variables（可选）：`FC_INTERVAL_DAYS`（默认 29）、`FC_DUE_DAYS`（默�
 
 - 本仓库是**唯一**跑定时任务的地方，私有仓库 `fc-private` 里不放任何 workflow。
 - `fc-private` 的代码更新后不用动本仓库 —— 每次运行都是重新检出私有仓库的 `main`。
-- 要加第 ② 个账号组：复制 workflow 改文件名，然后改 `name` / `cron` /
-  `concurrency.group` / `TIME_DIR` 四处（`TIME_DIR` 不改会并发提交互相覆盖）。
+- 多账号就是复制 workflow，见上面「多账号：一个账号一份 workflow」——
+  改 5 处（`name` / `cron` / `FC_USER` / `FC_PASS` / `TIME_DIR`），`concurrency` 不用动。
 
 详细文档在私有仓库的 `README.md`。

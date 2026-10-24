@@ -1,40 +1,51 @@
 # =============================================================================
-# FC 实例自动重建（公开仓库版）
+# FC 实例自动重建 —— 一个账号一份 workflow
 # -----------------------------------------------------------------------------
-# 结构照 auto_scripts/.github/workflows/hus-renew.yml 抄的：
-#   公开仓库只放 workflow + 时间文件，真正的代码在私有仓库 jyucoeng/fc-private，
-#   运行时用 PRIVATE_REPO_TOKEN 检出到工作区子目录里跑。
+# 多账号就复制这个文件：cp fc-renew.yml fc-renew-2.yml，然后改 5 处
+# （文件里所有要改的地方都用 ①②③④⑤ 标了，搜 `①` 逐个过一遍就行）：
 #
-# 和 hus 版的差别（都是因为这个项目本身的特性）：
-#   1. **纯标准库**：没有 requirements.txt，所以跳过 pip install / cache。
-#   2. **每天跑一次 + --if-due**：实例是 30 天周期，脚本自己判断「距到期不足 2 天」
-#      才动手；cron 表达不了「每 29 天」，所以靠每天检查 + 到期判断。
-#   3. **登录代理**：面板对来源 IP 敏感，PROXY_CONTENT 交给私有库里的
-#      gen_singbox_config.py + sing-box 起本地 mixed 端口，登录走它出去。
-#   4. **TG 报告在脚本里发**：私有库里的通知模块每个账号跑完发一条，
-#      所以 workflow 这边不需要额外的通知步骤。
+#   ①  name:        🔄 FC 实例重建 ①   → ②
+#   ②  cron:        '23 19 * * *'      → 错开（见下方 on.schedule 的注释）
+#   ③  FC_USER:     secrets.FC_USER    → secrets.FC_USER_2
+#   ④  FC_PASS:     secrets.FC_PASS    → secrets.FC_PASS_2
+#   ⑤  TIME_DIR:    fc/1               → fc/2
 #
-# 私有库里不含任何 workflow —— 本文件是唯一跑定时任务的地方。
+#   concurrency 不用改：用的是 ${{ github.workflow }}，每个文件天然互斥。
+#   TG 和代理的 Secret 各账号共用，不用复制。
 #
-# 需要配置的 Secrets（公开仓库 → Settings → Secrets and variables → Actions）：
+# -----------------------------------------------------------------------------
+# 跑法
+#   每天跑一次 + 脚本自己判断「距到期不足 2 天」才动手 —— cron 表达不了
+#   「每 29 天」，所以靠每天检查 + 服务端到期时间判断（--if-due）。
+#
+# 结构
+#   公开仓库只放 workflow + 时间文件，代码在私有仓库 jyucoeng/fc-private，
+#   运行时用部署密钥（PRIVATE_SSH_KEY）检出到工作区子目录里跑。
+#   私有库里不含任何 workflow —— 定时任务只在这里。
+#
+# Secrets（公开仓库 → Settings → Secrets and variables → Actions）
 #   PRIVATE_SSH_KEY      fc-private 的只读部署密钥（deploy key）私钥
-#   FC_USER              用户名或邮箱
-#   FC_PASS              密码
+#   FC_USER / FC_PASS    第 1 个账号的用户名（或邮箱）和密码
+#   FC_USER_2 / FC_PASS_2  第 2 个账号；第 3 个就 _3，以此类推
 #   FC_TG_TOKEN          Telegram Bot Token（可选，不配就不发报告）
 #   FC_TG_CHAT           Telegram chat id（可选，多个用逗号分隔）
-#   HY2_PROXY_URL    节点 URL：hy2:// vless:// trojan:// ss:// tuic:// anytls://
-#                        （可选，不配就直连）
+#   HY2_PROXY_URL        登录节点 URL（可选，不配就直连）
+#                        hy2:// vless:// trojan:// ss:// tuic:// anytls://
 #
-# Variables（可选）：
+# Variables（可选，各账号共用）
 #   FC_INTERVAL_DAYS       默认 29
 #   FC_DUE_DAYS            默认 2（→ 开通第 29 天动手）
 # =============================================================================
 
-name: 🔄 FC 实例重建 ①
+name: 🔄 FC 实例重建 ①          # ① 复制后改成 ②③…
 
 on:
   schedule:
-    # UTC 19:23 = 北京时间次日 03:23。避开整点，也避开 hus 系列的 00:07。
+    # ② 每个账号的触发时间错开，别挤在同一分钟。
+    #    cron 用 UTC，+8 小时才是北京时间；也避开整点，减少和其他任务撞车。
+    #    第 1 个：23 19 * * *  → 北京 次日 03:23
+    #    第 2 个：41 19 * * *  → 北京 次日 03:41
+    #    第 3 个：59 19 * * *  → 北京 次日 03:59
     - cron: '23 19 * * *'
   workflow_dispatch:
     inputs:
@@ -62,11 +73,13 @@ jobs:
     # 单账号约 3 分钟；多账号线性增长；再加上代理启动与重试，40 分钟够用。
     timeout-minutes: 40
     concurrency:
-      group: FC_Renew_1
+      # 用 workflow 名做互斥键：复制出来的文件 name 不同，天然各跑各的，
+      # 不用手动改这里。
+      group: ${{ github.workflow }}
       # 手动触发不抢占正在跑的定时任务——那会把正在重建的实例打断在半路。
       cancel-in-progress: false
     env:
-      # ── 凭据 ──────────────────────────────────────────────────────────
+      # ── 凭据（③④ 每个账号改这里；Secret 里对应 FC_USER_2 / FC_PASS_2）──
       FC_USER: ${{ secrets.FC_USER }}
       FC_PASS: ${{ secrets.FC_PASS }}
       # ── 通知 ──────────────────────────────────────────────────────────
@@ -81,7 +94,7 @@ jobs:
       # ── 私有仓库 ──────────────────────────────────────────────────────
       PRIVATE_REPO: jyucoeng/fc-private
       PROJECT_DIR: fc-private
-      TIME_DIR: fc/1
+      TIME_DIR: fc/1            # ⑤ 每个账号一个目录，别和别的账号共用
 
     steps:
       - name: 检出公开仓库
@@ -265,20 +278,24 @@ jobs:
         run: |
           set +e
           current_run="${{ github.run_id }}"
+          # 只清自己这个 workflow 的记录 —— 多账号是多个 workflow 文件，
+          # 别把别的账号的运行记录也删了。
+          my_workflow="${{ github.workflow }}"
           cutoff_epoch=$(date -d '24 hours ago' +%s)
           runs=$(gh run list \
             --repo "$GITHUB_REPOSITORY" \
             --limit=100 \
-            --json databaseId,createdAt,status \
-            --jq '.[] | [.databaseId, .createdAt, .status] | @tsv' 2>/dev/null)
+            --json databaseId,createdAt,status,workflowName \
+            --jq '.[] | [.databaseId, .createdAt, .status, .workflowName] | @tsv' 2>/dev/null)
           if [ -z "$runs" ]; then
             echo "没有找到可清理的运行记录"
             exit 0
           fi
 
-          to_delete=$(while IFS=$'\t' read -r run_id created_at status; do
+          to_delete=$(while IFS=$'\t' read -r run_id created_at status wf_name; do
             [ -z "$run_id" ] && continue
             [ "$run_id" = "$current_run" ] && continue
+            [ "$wf_name" != "$my_workflow" ] && continue
             [ "$status" != "completed" ] && continue
             created_epoch=$(date -d "$created_at" +%s 2>/dev/null || echo 0)
             [ "$created_epoch" -ge "$cutoff_epoch" ] && continue
