@@ -30,7 +30,7 @@ jobs:
           mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
           chmod +x ./sing-box
 
-      - name: 打印续费条款全文（只读）
+      - name: 把免费月数一次续完
         working-directory: fc-private
         run: |
           set -euo pipefail
@@ -44,18 +44,38 @@ jobs:
           sess.start()
           try:
               cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
-                     "proxy": sess.url, "fingerprint": None, "session_file": None}
+                     "proxy": sess.url, "fingerprint": None, "session_file": None,
+                     # 29 天后才到期，临时放宽到 400 天，专门验证「一次续到免费上限」
+                     "port_block_days": 400}
               p = Panel(proxy=sess.url)
               M.login(p, cfg)
+
+              print("=== 续之前 ===")
               for b in p.port_blocks().get("blocks") or []:
-                  print("=== 号段 id=%s %s-%s size=%s free=%s paid_until=%s"
+                  print("  id=%s %s-%s paid_until=%s"
                         % (b["id"], b["start"], b["start"] + b["size"] - 1,
-                           b["size"], b.get("free"), b.get("paid_until")))
+                           b.get("paid_until")))
                   try:
                       t = p.port_block_renew_terms(b["id"])
-                      print(json.dumps(t, ensure_ascii=False, indent=2))
+                      print("      免费月数=%d monthly=%s totals前3=%s"
+                            % (M.free_renew_months(t), t.get("monthly"),
+                               (t.get("totals") or [])[:3]))
                   except PanelError as e:
-                      print("  条款失败：%s" % e)
+                      print("      条款：%s" % e)
+
+              print("\n=== 续费（dry-run 先看一眼）===")
+              for row in M.renew_port_blocks(p, cfg, dry_run=True):
+                  print("  %s" % (row,))
+
+              print("\n=== 真续 ===")
+              for row in M.renew_port_blocks(p, cfg):
+                  print("  %s" % (row,))
+
+              print("\n=== 续之后 ===")
+              for b in p.port_blocks().get("blocks") or []:
+                  print("  id=%s %s-%s paid_until=%s"
+                        % (b["id"], b["start"], b["start"] + b["size"] - 1,
+                           b.get("paid_until")))
           finally:
               sess.stop()
           PY
