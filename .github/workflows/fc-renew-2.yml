@@ -1,0 +1,308 @@
+# =============================================================================
+# FC 实例自动重建 —— 一个账号一份 workflow
+# -----------------------------------------------------------------------------
+# 多账号就复制这个文件：cp fc-renew.yml fc-renew-2.yml，然后改 5 处
+# （文件里所有要改的地方都用 ①②③④⑤ 标了，搜 `①` 逐个过一遍就行）：
+#
+#   ①  name:        🔄 FC 实例重建 ①   → ②
+#   ②  cron:        '23 19 * * *'      → 错开（见下方 on.schedule 的注释）
+#   ③  FC_USER:     secrets.FC_USER    → secrets.FC_USER_2
+#   ④  FC_PASS:     secrets.FC_PASS    → secrets.FC_PASS_2
+#   ⑤  TIME_DIR:    fc/1               → fc/2
+#
+#   concurrency 不用改：用的是 ${{ github.workflow }}，每个文件天然互斥。
+#   TG 和代理的 Secret 各账号共用，不用复制。
+#
+# -----------------------------------------------------------------------------
+# 跑法
+#   每天跑一次 + 脚本自己判断「距到期不足 2 天」才动手 —— cron 表达不了
+#   「每 29 天」，所以靠每天检查 + 服务端到期时间判断（--if-due）。
+#
+# 结构
+#   公开仓库只放 workflow + 时间文件，代码在私有仓库 jyucoeng/fc-private，
+#   运行时用 PRIVATE_REPO_TOKEN 检出到工作区子目录里跑。
+#   私有库里不含任何 workflow —— 定时任务只在这里。
+#
+# Secrets（公开仓库 → Settings → Secrets and variables → Actions）
+#   PRIVATE_REPO_TOKEN   读 fc-private 用的 GitHub token（HTTPS 检出，唯一方式）
+#   FC_USER / FC_PASS    第 1 个账号（liwei 用 FC_USER_2 / FC_PASS_2）
+#   FC_USER_2 / FC_PASS_2  第 2 个账号；第 3 个就 _3，以此类推
+#   FC_TG_TOKEN          Telegram Bot Token（可选，不配就不发报告）
+#   FC_TG_CHAT           Telegram chat id（可选，多个用逗号分隔）
+#   HY2_PROXY_URL        登录节点 URL（可选，不配就直连）
+#                        hy2:// vless:// trojan:// ss:// tuic:// anytls://
+#
+# Variables（可选，各账号共用）
+#   FC_INTERVAL_DAYS       默认 29
+#   FC_DUE_DAYS            默认 2（→ 开通第 29 天动手）
+# =============================================================================
+
+name: 🔄 FC 实例重建 ②          # ① 复制后改成 ②③…
+
+on:
+  schedule:
+    # ② 每个账号的触发时间错开，别挤在同一分钟。
+    #    cron 用 UTC，+8 小时才是北京时间；也避开整点，减少和其他任务撞车。
+    #    第 1 个：23 19 * * *  → 北京 次日 03:23
+    #    第 2 个：41 19 * * *  → 北京 次日 03:41
+    #    第 3 个：59 19 * * *  → 北京 次日 03:59
+    - cron: '41 19 * * *'
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: "阶段"
+        type: choice
+        options: [auto, open, maintain]
+        default: auto
+      force:
+        description: "忽略到期检查，强制执行"
+        type: boolean
+        default: false
+      dry_run:
+        description: "只体检，不动手"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write     # 最后要提交 time.txt 保活
+  actions: write      # 清理旧运行记录
+
+jobs:
+  renew:
+    runs-on: ubuntu-24.04
+    # 单账号约 3 分钟；多账号线性增长；再加上代理启动与重试，40 分钟够用。
+    timeout-minutes: 40
+    concurrency:
+      # 用 workflow 名做互斥键：复制出来的文件 name 不同，天然各跑各的，
+      # 不用手动改这里。
+      group: ${{ github.workflow }}
+      # 手动触发不抢占正在跑的定时任务——那会把正在重建的实例打断在半路。
+      cancel-in-progress: false
+    env:
+      # ── 凭据（③④ 每个账号改这里；Secret 里对应 FC_USER_2 / FC_PASS_2）──
+      FC_USER: ${{ secrets.FC_USER_2 }}
+      FC_PASS: ${{ secrets.FC_PASS_2 }}
+      # ── 通知 ──────────────────────────────────────────────────────────
+      FC_TG_TOKEN: ${{ secrets.FC_TG_TOKEN }}
+      FC_TG_CHAT: ${{ secrets.FC_TG_CHAT }}
+      # ── 登录代理 ──────────────────────────────────────────────────────
+      PROXY_CONTENT: ${{ secrets.HY2_PROXY_URL }}
+      SOCKS_PORT: '10808'
+      # ── 周期 ──────────────────────────────────────────────────────────
+      FC_INTERVAL_DAYS: ${{ vars.FC_INTERVAL_DAYS || '29' }}
+      FC_DUE_DAYS: ${{ vars.FC_DUE_DAYS || '2' }}
+      # ── 私有仓库 ──────────────────────────────────────────────────────
+      PRIVATE_REPO: jyucoeng/fc-private
+      PROJECT_DIR: fc-private
+      TIME_DIR: fc/2            # ⑤ 每个账号一个目录，别和别的账号共用
+
+    steps:
+      - name: 检出公开仓库
+        uses: actions/checkout@v7
+
+      - name: 检出私有仓库
+        env:
+          REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REPO_TOKEN:-}" ]; then
+            echo "::error::没有 PRIVATE_REPO_TOKEN，无法检出私有仓库"
+            exit 1
+          fi
+
+          echo "检出方式：PRIVATE_REPO_TOKEN（HTTPS）"
+          # token 放 header，不拼进 URL —— 否则 git 报错时会把带 token 的 URL
+          # 原样打到日志里。
+          auth=$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+            clone --depth 1 "https://github.com/${PRIVATE_REPO}.git" "$PROJECT_DIR"
+
+          # 别把凭据留在 .git/config 里（私有库是检出在公开库工作区内部的）
+          git -C "$PROJECT_DIR" remote set-url origin "https://github.com/${PRIVATE_REPO}.git"
+
+      - name: 校验凭据
+        id: check
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess, sys
+
+          # 入口自检：确认私有库里的脚本在 runner 上起得来（只跑 --help，不登录不联网）。
+          # 放在最前面，所以「只保活」模式下也会跑到。
+          r = subprocess.run([sys.executable, "fc.py", "--help"],
+                             capture_output=True, text=True)
+          if r.returncode != 0:
+              raise SystemExit("fc.py --help 失败：%s" % (r.stderr or r.stdout)[:400])
+          print("入口自检：fc.py --help OK")
+
+          # 先把「配了什么」打出来 —— 只保活模式下也要能看到
+          # 注意：Secret 名和进程里的环境变量名不一定一样
+          #   HY2_PROXY_URL（Secret） → PROXY_CONTENT（环境变量）
+          for secret_name, env_name in (("FC_TG_TOKEN", "FC_TG_TOKEN"),
+                                        ("HY2_PROXY_URL", "PROXY_CONTENT")):
+              print("%-20s %s" % (secret_name,
+                                  "已配置" if os.environ.get(env_name, "").strip() else "未配置"))
+
+          user = os.environ.get("FC_USER", "").strip()
+          pwd = os.environ.get("FC_PASS", "").strip()
+
+          def mask(s):
+              # 账号可能是邮箱，也可能是纯用户名（如 dora），规则和通知模块一致：
+              # 有 @ 就取前面那段，星号个数 = 被藏掉的字符个数。
+              #   guo123500 → guo***500   dora → d**a   abc → a*c   ab → **
+              local = s.split("@")[0]
+              n = len(local)
+              if n <= 2:
+                  return "*" * n
+              keep = 3 if n > 6 else 1
+              return local[:keep] + "*" * (n - 2 * keep) + local[-keep:]
+
+          if user and pwd:
+              print("账号：%s" % mask(user))
+          else:
+              # 没配凭据不报错：这个仓库也可以只当「保活/备份」用，
+              # 那样每天红一次毫无意义。标记一下，跳过运行步骤即可。
+              print("没配凭据 → 本次只保活，不跑维护")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write("has_creds=false\n")
+              raise SystemExit(0)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("has_creds=true\n")
+          PY
+
+      - name: 设置 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          # 没有 requirements.txt：项目只依赖标准库，所以不装 pip 包、也不用 cache。
+
+      - name: 安装代理（sing-box）
+        if: steps.check.outputs.has_creds == 'true'
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ -z "$PROXY_CONTENT" ]; then
+            echo "[INFO] 未配置 PROXY_CONTENT，直连模式"
+            exit 0
+          fi
+
+          SB_VER="1.13.14"
+          ARCHIVE="sing-box-${SB_VER}-linux-amd64.tar.gz"
+          wget -q "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/${ARCHIVE}"
+          tar -xzf "$ARCHIVE" -C /tmp/
+          mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
+          chmod +x ./sing-box
+          rm -rf "/tmp/sing-box-${SB_VER}-linux-amd64" "$ARCHIVE"
+          echo "[INFO] sing-box $(./sing-box version | head -1)"
+
+      - name: 随机延迟
+        if: steps.check.outputs.has_creds == 'true'
+        run: |
+          delay=$((RANDOM % 120))
+          echo "随机延迟: ${delay}秒"
+          sleep $delay
+
+      - name: 运行
+        if: steps.check.outputs.has_creds == 'true'
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          ARGS="--phase ${{ inputs.phase || 'auto' }}"
+          if [ "${{ inputs.force }}" != "true" ]; then
+            ARGS="$ARGS --if-due"
+          fi
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          # 不要用 `python3 ... | tee log`：管道里 $! 是 tee 的 PID，
+          # 退出码永远是 0，脚本失败会被吞掉。重定向 + wait 真实 PID。
+          echo "运行：python3 fc.py $ARGS"
+          python3 -u fc.py $ARGS > fc.log 2>&1 &
+          pid=$!
+          while kill -0 "$pid" 2>/dev/null; do
+            echo "[HEARTBEAT] 仍在运行: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            sleep 15
+          done
+          status=0
+          wait "$pid" || status=$?
+          echo "---- 退出码: ${status} ----"
+          tail -n 80 fc.log || true
+          exit "$status"
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fc-log-${{ github.run_id }}
+          path: ${{ env.PROJECT_DIR }}/fc.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 提交执行时间
+        if: always()
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 每次以最新 origin/main 为基准重建提交，避免并发 run 互相覆盖。
+          for attempt in 1 2 3; do
+            echo "提交执行时间，第 ${attempt}/3 次尝试"
+            git fetch origin refs/heads/main:refs/remotes/origin/main
+            git reset --hard origin/main
+            mkdir -p "${{ env.TIME_DIR }}"
+            date +'%Y-%m-%d %H:%M:%S' > "${{ env.TIME_DIR }}/time.txt"
+            git add "${{ env.TIME_DIR }}/time.txt"
+            git commit -m "更新时间文件: $(date +'%Y-%m-%d %H:%M:%S')"
+            if git push origin HEAD:refs/heads/main; then
+              echo "执行时间已提交"
+              exit 0
+            fi
+            echo "推送发生并发冲突，重新获取远端后重试"
+            git reset --hard origin/main
+            sleep 2
+          done
+          echo "3 次推送均失败"
+          exit 1
+
+      - name: 🧹 清理旧的工作流运行记录
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          current_run="${{ github.run_id }}"
+          # 只清自己这个 workflow 的记录 —— 多账号是多个 workflow 文件，
+          # 别把别的账号的运行记录也删了。
+          my_workflow="${{ github.workflow }}"
+          cutoff_epoch=$(date -d '24 hours ago' +%s)
+          runs=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit=100 \
+            --json databaseId,createdAt,status,workflowName \
+            --jq '.[] | [.databaseId, .createdAt, .status, .workflowName] | @tsv' 2>/dev/null)
+          if [ -z "$runs" ]; then
+            echo "没有找到可清理的运行记录"
+            exit 0
+          fi
+
+          to_delete=$(while IFS=$'\t' read -r run_id created_at status wf_name; do
+            [ -z "$run_id" ] && continue
+            [ "$run_id" = "$current_run" ] && continue
+            [ "$wf_name" != "$my_workflow" ] && continue
+            [ "$status" != "completed" ] && continue
+            created_epoch=$(date -d "$created_at" +%s 2>/dev/null || echo 0)
+            [ "$created_epoch" -ge "$cutoff_epoch" ] && continue
+            echo "$run_id"
+          done <<< "$runs")
+
+          if [ -z "$to_delete" ]; then
+            echo "清理完成：没有超过 24 小时的已完成记录"
+            exit 0
+          fi
+
+          count=$(echo "$to_delete" | wc -l | tr -d ' ')
+          echo "待删除 $count 条超过 24 小时的已完成记录（并发 10 路）"
+          echo "$to_delete" | xargs -P 10 -I{} sh -c 'gh run delete "$1" --repo "$2" >/dev/null 2>&1 || true' _ {} "$GITHUB_REPOSITORY"
+          echo "清理完成：保留最近 24 小时记录及所有未完成记录"
