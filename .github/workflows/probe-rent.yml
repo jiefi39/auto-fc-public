@@ -30,44 +30,70 @@ jobs:
           mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
           chmod +x ./sing-box
 
-      - name: 看号段选项（只读）
+      - name: 租 0 元号段 + 改成两段
         working-directory: fc-private
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os
+          import json, os, time
           import firadio_maintain as M
-          from firadio_panel import Panel
+          from firadio_panel import Panel, PanelError
           from firadio_proxy import ProxySession
 
           sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
           sess.start()
           try:
               cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
-                     "proxy": sess.url, "fingerprint": None, "session_file": None}
+                     "proxy": sess.url, "fingerprint": None, "session_file": None,
+                     "port_span": 20}
               p = Panel(proxy=sess.url)
               M.login(p, cfg)
-              data = p.port_blocks()
-              print("=== GET /port-blocks 顶层键：%s" % list(data.keys()))
-              print("currency=%s grace_days=%s" % (data.get("currency"),
-                                                   data.get("grace_days")))
-              print("\n=== 已有号段 ===")
-              for b in data.get("blocks") or []:
-                  print("  %s" % json.dumps(b, ensure_ascii=False))
-              print("\n=== 可租选项 ===")
-              print(json.dumps(data.get("options"), ensure_ascii=False, indent=2))
-              print("\n=== starts（按每个 option 的 size 问一下）===")
-              for o in data.get("options") or []:
-                  for sz in (o.get("sizes") or []):
+              uuid = p.instances()[0]["uuid"]
+
+              print("=== 租号段前 ===")
+              for b in p.port_blocks().get("blocks") or []:
+                  print("  id=%s %s-%s size=%s free=%s ranges=%s"
+                        % (b["id"], b["start"], b["start"] + b["size"] - 1,
+                           b["size"], b.get("free"), b.get("ranges")))
+
+              print("\n=== 租 0 元号段（走 rent_port_block）===")
+              got = M.rent_port_block(p, cfg)
+              print("  返回：%s" % json.dumps(got, ensure_ascii=False)[:300])
+
+              def nat():
+                  return p.instance(uuid).get("nat") or []
+
+              print("\n=== 拆掉逐端口规则 ===")
+              for r in nat():
+                  if (r.get("port") or 0) >= 17900 and (r.get("port") or 0) != 17950:
                       try:
-                          st = p.get("/port-blocks/starts?domain_id=%s&size=%s&q="
-                                     % (o.get("domain_id"), sz.get("size")))
-                          print("  domain=%s size=%s -> %s"
-                                % (o.get("domain_id"), sz.get("size"),
-                                   json.dumps(st, ensure_ascii=False)[:400]))
-                      except Exception as e:
-                          print("  domain=%s size=%s 失败：%s"
-                                % (o.get("domain_id"), sz.get("size"), e))
+                          p.remove_port(uuid, r["port"], domain=1, span=r.get("span", 1))
+                          print("  拆 %s %s ✅" % (r.get("protocol"), r["port"]))
+                      except PanelError as e:
+                          print("  拆 %s %s 失败：%s" % (r.get("protocol"), r["port"], e))
+                      time.sleep(0.4)
+              time.sleep(2)
+
+              print("\n=== 用新号段挂 2 段 ===")
+              done = M.add_ports(p, uuid, 5, 2,
+                                 prefer=M.stable_port_candidates(p),
+                                 total_ports=20)
+              time.sleep(2)
+
+              print("\n=== 结果 ===")
+              for r in nat():
+                  span = r.get("span", 1)
+                  print("  %s %s%s" % (r.get("protocol"), r.get("port"),
+                                       "-%d" % (r["port"] + span - 1) if span > 1 else ""))
+              print("  规则 %d / max_ports %s" % (len(nat()),
+                                                 p.instance(uuid).get("max_ports")))
+              print("  add_ports 返回：%s" % done)
+              print("\n=== 号段 ===")
+              for b in p.port_blocks().get("blocks") or []:
+                  print("  id=%s %s-%s size=%s free=%s paid_until=%s address=%s"
+                        % (b["id"], b["start"], b["start"] + b["size"] - 1,
+                           b["size"], b.get("free"), b.get("paid_until"),
+                           b.get("address")))
           finally:
               sess.stop()
           PY
