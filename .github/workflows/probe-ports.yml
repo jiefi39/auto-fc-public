@@ -33,12 +33,12 @@ jobs:
           chmod +x ./sing-box
           ./sing-box version | head -1
 
-      - name: 清理测试端口
+      - name: 验证端口沿用
         working-directory: fc-private
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, time
+          import os
           import firadio_maintain as M
           from firadio_panel import Panel
           from firadio_proxy import ProxySession
@@ -52,19 +52,19 @@ jobs:
               M.login(p, cfg)
               uuid = p.instances()[0]["uuid"]
 
-              print("清理前 total=%s" % p.free_ports(uuid).get("total"))
-              for domain in (1, 0):
-                  try:
-                      p.remove_port(uuid, 13000, domain=domain)
-                      print("  已删除 13000（domain=%d）" % domain)
-                      break
-                  except Exception as e:
-                      print("  domain=%d 删不掉：%s" % (domain, e))
-              time.sleep(2)
-              print("清理后 total=%s（109 = 干净）" % p.free_ports(uuid).get("total"))
-              print("  再搜 13000 → %s" % (p.free_ports(uuid, q="13000").get("ports") or []))
-              full = p.instance(uuid)
-              print("  max_ports=%s" % full.get("max_ports"))
+              cands = M.stable_port_candidates(p)
+              print("账号级号段候选：共 %d 个" % len(cands))
+              print("  前 12 个：%s" % cands[:12])
+              print("  含 10090-10099（绑实例的）吗：",
+                    [x for x in cands if 10090 <= x <= 10099] or "不含 ✅")
+
+              # 只演算不落库：模拟 add_ports 会挑哪 7 个
+              plan = [("tcp", i + 1) for i in range(5)] + [("udp", i + 1) for i in range(2)]
+              free = set(p.free_ports(uuid, "", 0).get("ports") or [])
+              pick = [x for x in cands if x in free][:len(plan)]
+              print("\n下一次重建会挑的 7 个号：%s" % pick)
+              print("  空闲列表里有它们吗：", all(x in free for x in pick))
+              print("  当前实例的映射（对比用）：10091-10097（绑实例号段，重建会换）")
           finally:
               sess.stop()
           PY
