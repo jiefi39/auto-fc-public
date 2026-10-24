@@ -162,13 +162,14 @@ jobs:
 
           def mask(s):
               # 账号可能是邮箱，也可能是纯用户名（如 dora），规则和通知模块一致：
-              # 有 @ 就取前面那段；>6 位留前 3 后 3，>3 位留前 1 后 1，再短就全星掉
+              # 有 @ 就取前面那段，星号个数 = 被藏掉的字符个数。
+              #   guo123500 → guo***500   dora → d**a   abc → a*c   ab → **
               local = s.split("@")[0]
-              if len(local) > 6:
-                  return local[:3] + "***" + local[-3:]
-              if len(local) > 3:
-                  return local[0] + "***" + local[-1]
-              return "***"
+              n = len(local)
+              if n <= 2:
+                  return "*" * n
+              keep = 3 if n > 6 else 1
+              return local[:keep] + "*" * (n - 2 * keep) + local[-keep:]
 
           if user and pwd:
               print("账号：%s" % mask(user))
