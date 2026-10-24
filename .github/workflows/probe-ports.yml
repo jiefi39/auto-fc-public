@@ -38,70 +38,59 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os
+          import json, os, time
           import firadio_maintain as M
-          from firadio_panel import Panel, API_CONSOLE
+          from firadio_panel import Panel
           from firadio_proxy import ProxySession
 
           sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
           sess.start()
           print("代理就绪：%s  出口 IP：%s" % (sess.url, sess.exit_ip))
-          proxy = sess.url
-          cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
-                 "proxy": proxy, "fingerprint": None, "session_file": None}
-          p = Panel(proxy=proxy)
-          M.login(p, cfg)
-          print("登录成功")
-
-          insts = p.instances()
-          print("\n=== 实例 ===")
-          for it in insts:
-              print("  %s  uuid=%s  host=%s  spec=%s"
-                    % (it.get("name"), it.get("uuid"), it.get("host_id"), it.get("spec_name")))
-          uuid = insts[0]["uuid"]
-
-          print("\n=== 实例详情字段 ===")
-          full = p.instance(uuid)
-          print("  ", sorted(full.keys()))
-          print("\n=== 当前端口映射 ===")
-          for key in ("ports", "port_mappings", "mappings", "port_uses"):
-              if key in full:
-                  print("  [%s] %s" % (key, json.dumps(full[key], ensure_ascii=False)[:1500]))
-
-          print("\n=== 空闲端口总数 ===")
-          free = p.free_ports(uuid)
-          print("  total=%s  本页 %d 个  前 12 个=%s"
-                % (free.get("total"), len(free.get("ports") or []),
-                   (free.get("ports") or [])[:12]))
-
-          print("\n=== 逐个搜历史端口 ===")
-          for want in (13131, 13132, 13133, 13134, 13135, 13136, 13137, 10091, 20000, 30000):
-              r = p.free_ports(uuid, q=str(want))
-              got = r.get("ports") or []
-              mark = "" if want in got else "   ← 搜不到"
-              print("  搜 %-6s → %s%s" % (want, got[:6], mark))
-
-          print("\n=== 端口号段 ===")
           try:
-              print(json.dumps(p.port_blocks(), ensure_ascii=False)[:900])
-          except Exception as e:
-              print("  取不到：%s" % e)
+              cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
+                     "proxy": sess.url, "fingerprint": None, "session_file": None}
+              p = Panel(proxy=sess.url)
+              M.login(p, cfg)
 
-          print("\n=== 拉全部空闲端口 ===")
-          allp, off, total = [], 0, None
-          while True:
-              r = p.free_ports(uuid, "", off)
-              chunk = r.get("ports") or []
-              total = r.get("total")
-              if not chunk:
-                  break
-              allp += chunk
-              off += len(chunk)
-              if len(allp) >= (total or 0) or len(allp) > 500:
-                  break
-          print("  共 %d 个（total=%s）" % (len(allp), total))
-          print("  ", allp[:120])
-          print("  历史端口 13131-13137 在里面吗：",
-                [x for x in range(13131, 13138) if x in allp] or "一个都不在")
-          sess.stop()
+              uuid = p.instances()[0]["uuid"]
+              full = p.instance(uuid)
+
+              print("\n=== 实例关键字段 ===")
+              for k in ("name", "port_start", "port_end", "max_ports", "port_domain",
+                        "port_blocks", "host", "status"):
+                  print("  %-12s %s" % (k, json.dumps(full.get(k), ensure_ascii=False)[:400]))
+
+              print("\n=== 号段（完整）===")
+              print(json.dumps(p.port_blocks(), ensure_ascii=False, indent=1)[:4000])
+
+              print("\n=== 空闲端口（前后对比）===")
+              before = p.free_ports(uuid).get("total")
+              print("  加映射前 total=%s" % before)
+
+              print("\n=== 实测：显式指定 13000 ===")
+              try:
+                  r = p.add_port(uuid, target_port=0, port=13000, protocol="tcp", count=1)
+                  print("  加成功：%s" % json.dumps(r, ensure_ascii=False)[:300])
+                  time.sleep(2)
+                  after = p.free_ports(uuid).get("total")
+                  print("  加映射后 total=%s（应少 1）" % after)
+                  got = p.free_ports(uuid, q="13000").get("ports") or []
+                  print("  再搜 13000 → %s（应搜不到）" % got)
+              finally:
+                  try:
+                      p.remove_port(uuid, 13000)
+                      print("  已删除测试映射 13000")
+                  except Exception as e:
+                      print("  删除失败（要手工清）：%s" % e)
+                  time.sleep(2)
+                  back = p.free_ports(uuid).get("total")
+                  print("  清理后 total=%s（应回到 %s）" % (back, before))
+                  print("  再搜 13000 → %s（应又出现）"
+                        % (p.free_ports(uuid, q="13000").get("ports") or []))
+
+              print("\n=== 结论用数据 ===")
+              print("  13000 在空闲列表里：", 13000 in (p.free_ports(uuid, "", 0).get("ports") or []))
+              print("  10090 在空闲列表里：", 10090 in (p.free_ports(uuid, "", 0).get("ports") or []))
+          finally:
+              sess.stop()
           PY
