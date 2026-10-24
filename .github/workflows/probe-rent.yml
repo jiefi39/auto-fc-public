@@ -1,0 +1,73 @@
+name: 🔍 号段租用选项（临时）
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      FC_USER: ${{ secrets.FC_USER_2 }}
+      FC_PASS: ${{ secrets.FC_PASS_2 }}
+      PROXY_CONTENT: ${{ secrets.HY2_PROXY_URL }}
+      PRIVATE_REPO: jyucoeng/fc-private
+      REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+    steps:
+      - name: 检出私有仓库
+        run: |
+          set -euo pipefail
+          auth=$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+            clone --depth 1 "https://github.com/${PRIVATE_REPO}.git" fc-private
+
+      - name: 装 sing-box
+        working-directory: fc-private
+        run: |
+          set -euo pipefail
+          SB_VER="1.13.14"
+          wget -q "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-amd64.tar.gz"
+          tar -xzf "sing-box-${SB_VER}-linux-amd64.tar.gz" -C /tmp/
+          mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
+          chmod +x ./sing-box
+
+      - name: 看号段选项（只读）
+        working-directory: fc-private
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          import firadio_maintain as M
+          from firadio_panel import Panel
+          from firadio_proxy import ProxySession
+
+          sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
+          sess.start()
+          try:
+              cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
+                     "proxy": sess.url, "fingerprint": None, "session_file": None}
+              p = Panel(proxy=sess.url)
+              M.login(p, cfg)
+              data = p.port_blocks()
+              print("=== GET /port-blocks 顶层键：%s" % list(data.keys()))
+              print("currency=%s grace_days=%s" % (data.get("currency"),
+                                                   data.get("grace_days")))
+              print("\n=== 已有号段 ===")
+              for b in data.get("blocks") or []:
+                  print("  %s" % json.dumps(b, ensure_ascii=False))
+              print("\n=== 可租选项 ===")
+              print(json.dumps(data.get("options"), ensure_ascii=False, indent=2))
+              print("\n=== starts（按每个 option 的 size 问一下）===")
+              for o in data.get("options") or []:
+                  for sz in (o.get("sizes") or []):
+                      try:
+                          st = p.get("/port-blocks/starts?domain_id=%s&size=%s&q="
+                                     % (o.get("domain_id"), sz.get("size")))
+                          print("  domain=%s size=%s -> %s"
+                                % (o.get("domain_id"), sz.get("size"),
+                                   json.dumps(st, ensure_ascii=False)[:400]))
+                      except Exception as e:
+                          print("  domain=%s size=%s 失败：%s"
+                                % (o.get("domain_id"), sz.get("size"), e))
+          finally:
+              sess.stop()
+          PY
