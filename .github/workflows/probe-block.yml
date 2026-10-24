@@ -30,14 +30,14 @@ jobs:
           mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
           chmod +x ./sing-box
 
-      - name: 核对规则条数（只读）
+      - name: 逐端口改成整段
         working-directory: fc-private
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os
+          import json, os, time
           import firadio_maintain as M
-          from firadio_panel import Panel
+          from firadio_panel import Panel, PanelError
           from firadio_proxy import ProxySession
 
           sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
@@ -47,34 +47,45 @@ jobs:
                      "proxy": sess.url, "fingerprint": None, "session_file": None}
               p = Panel(proxy=sess.url)
               M.login(p, cfg)
-              inst = p.instances()[0]
-              uuid = inst["uuid"]
-              full = p.instance(uuid)
+              uuid = p.instances()[0]["uuid"]
 
-              nat = full.get("nat") or []
-              print("=== instance.nat（真正的映射规则）===")
-              for r in nat:
+              def nat():
+                  return (p.instance(uuid).get("nat") or [])
+
+              print("=== 改之前 ===")
+              for r in nat():
+                  print("  %s %s span=%s" % (r.get("protocol"), r.get("port"),
+                                             r.get("span", 1)))
+              print("  规则 %d / max_ports %s"
+                    % (len(nat()), p.instance(uuid).get("max_ports")))
+
+              # 只拆 13000 以上的（10090-10099 是绑实例号段的整段预留，留着）
+              for r in nat():
+                  port = r.get("port")
+                  if port and port >= 13000:
+                      try:
+                          p.remove_port(uuid, port, domain=1,
+                                        span=r.get("span", 1))
+                          print("  拆 %s %s ✅" % (r.get("protocol"), port))
+                      except PanelError as e:
+                          print("  拆 %s %s 失败：%s" % (r.get("protocol"), port, e))
+                      time.sleep(0.4)
+              time.sleep(2)
+              print("  拆完规则 %d" % len(nat()))
+
+              print("\n=== 用整段重挂 ===")
+              done = M.add_ports(p, uuid, 5, 2,
+                                 prefer=M.stable_port_candidates(p))
+              time.sleep(2)
+
+              print("\n=== 改之后 ===")
+              for r in nat():
                   span = r.get("span", 1)
-                  print("  %s  %s%s  -> 同号  规则 1 条"
-                        % (r.get("protocol"), r.get("port"),
-                           "-%d" % (r["port"] + span - 1) if span > 1 else ""))
-              print("  规则条数 %d / max_ports %s" % (len(nat), full.get("max_ports")))
-
-              print("\n=== 号段里的端口展开（API 会按端口摊平）===")
-              for b in p.port_blocks()["blocks"]:
-                  rows = [r for r in (b.get("ports") or [])
-                          if r.get("instance_uuid") == uuid]
-                  if rows:
-                      print("  号段 %s：%s" % (b["id"],
-                            sorted((r["protocol"], r["port"]) for r in rows)))
-
-              print("\n=== 续费状态 ===")
-              for b in p.port_blocks()["blocks"]:
-                  if b.get("paid_until"):
-                      t = p.port_block_renew_terms(b["id"])
-                      print("  号段 %s 付到 %s，续费 %s/月，最多可续 %s 个月"
-                            % (b["id"], b["paid_until"], M.money(t["monthly"], {}),
-                               t["can_renew"]))
+                  print("  %s %s%s" % (r.get("protocol"), r.get("port"),
+                                       "-%d" % (r["port"] + span - 1) if span > 1 else ""))
+              print("  规则 %d / max_ports %s" % (len(nat()),
+                                                 p.instance(uuid).get("max_ports")))
+              print("  add_ports 返回：%s" % done)
           finally:
               sess.stop()
           PY
