@@ -22,8 +22,8 @@ Settings → Secrets and variables → Actions：
 | Secret | 必填 | 说明 |
 | --- | --- | --- |
 | `PRIVATE_SSH_KEY` | ✅ | `fc-private` 只读部署密钥的私钥（Settings → Deploy keys 里那把公钥对应的私钥） |
-| `FC_ACCOUNTS` | ✅ 二选一 | `accounts.json` 压成一行的 JSON |
-| `FC_USER` / `FC_PASS` | ✅ 二选一 | 单账号时用 |
+| `FC_USER` | ✅ | 用户名或邮箱 |
+| `FC_PASS` | ✅ | 密码 |
 | `FC_TG_TOKEN` | 可选 | Telegram Bot Token，不配就不发报告 |
 | `FC_TG_CHAT` | 可选 | Telegram 会话 id，多个用逗号分隔 |
 | `HY2_PROXY_URL` | 可选 | 登录用的节点 URL（`hy2://` `vless://` `trojan://` `ss://` `tuic://` `anytls://`） |

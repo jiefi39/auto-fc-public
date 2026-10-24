@@ -18,8 +18,8 @@
 #
 # 需要配置的 Secrets（公开仓库 → Settings → Secrets and variables → Actions）：
 #   PRIVATE_SSH_KEY      fc-private 的只读部署密钥（deploy key）私钥
-#   FC_ACCOUNTS          accounts.json 压成一行的 JSON（多账号，推荐）
-#   或 FC_USER / FC_PASS（单账号）
+#   FC_USER              用户名或邮箱
+#   FC_PASS              密码
 #   FC_TG_TOKEN          Telegram Bot Token（可选，不配就不发报告）
 #   FC_TG_CHAT           Telegram chat id（可选，多个用逗号分隔）
 #   HY2_PROXY_URL    节点 URL：hy2:// vless:// trojan:// ss:// tuic:// anytls://
@@ -67,7 +67,6 @@ jobs:
       cancel-in-progress: false
     env:
       # ── 凭据 ──────────────────────────────────────────────────────────
-      FC_ACCOUNTS: ${{ secrets.FC_ACCOUNTS }}
       FC_USER: ${{ secrets.FC_USER }}
       FC_PASS: ${{ secrets.FC_PASS }}
       # ── 通知 ──────────────────────────────────────────────────────────
@@ -119,7 +118,7 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           python3 - <<'PY'
-          import json, os, subprocess, sys
+          import os, subprocess, sys
 
           # 入口自检：确认私有库里的脚本在 runner 上起得来（只跑 --help，不登录不联网）。
           # 放在最前面，所以「只保活」模式下也会跑到。
@@ -137,7 +136,6 @@ jobs:
               print("%-20s %s" % (secret_name,
                                   "已配置" if os.environ.get(env_name, "").strip() else "未配置"))
 
-          acc = os.environ.get("FC_ACCOUNTS", "").strip()
           user = os.environ.get("FC_USER", "").strip()
           pwd = os.environ.get("FC_PASS", "").strip()
 
@@ -151,28 +149,8 @@ jobs:
                   return local[0] + "***" + local[-1]
               return "***"
 
-          if acc:
-              try:
-                  data = json.loads(acc)
-              except json.JSONDecodeError as e:
-                  raise SystemExit("FC_ACCOUNTS 不是合法 JSON：%s" % e)
-              accounts = data.get("accounts") if isinstance(data, dict) else data
-              if not isinstance(accounts, list) or not accounts:
-                  raise SystemExit("FC_ACCOUNTS 必须是非空数组（或 {\"accounts\": [...]}）")
-              names = []
-              for i, item in enumerate(accounts, 1):
-                  if not isinstance(item, dict):
-                      raise SystemExit("第 %d 项不是对象" % i)
-                  u = item.get("user") or item.get("username") or item.get("email")
-                  if not u or not item.get("password"):
-                      raise SystemExit("第 %d 项缺少 user/password" % i)
-                  names.append(str(u))
-              dupes = sorted({n for n in names if names.count(n) > 1})
-              if dupes:
-                  raise SystemExit("账号重复（会被跑两遍）：%s" % ", ".join(dupes))
-              print("多账号模式：%d 个账号（%s）" % (len(names), ", ".join(mask(n) for n in names)))
-          elif user and pwd:
-              print("单账号模式：%s" % mask(user))
+          if user and pwd:
+              print("账号：%s" % mask(user))
           else:
               # 没配凭据不报错：这个仓库也可以只当「保活/备份」用，
               # 那样每天红一次毫无意义。标记一下，跳过运行步骤即可。
@@ -222,9 +200,6 @@ jobs:
         run: |
           set -euo pipefail
           ARGS="--phase ${{ inputs.phase || 'auto' }}"
-          if [ -n "${FC_ACCOUNTS:-}" ]; then
-            ARGS="$ARGS --all"
-          fi
           if [ "${{ inputs.force }}" != "true" ]; then
             ARGS="$ARGS --if-due"
           fi
