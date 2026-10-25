@@ -34,14 +34,15 @@ jobs:
           mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
           chmod +x ./sing-box
 
-      - name: 打印 me()
+      - name: 预览新报告并真发一条
         working-directory: fc-private
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os
+          import os
           import firadio_maintain as M
           from firadio_panel import Panel
+          from firadio_notify import build_report, notify_run, probe_ip
           from firadio_proxy import ProxySession
 
           sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
@@ -51,20 +52,32 @@ jobs:
                   cfg = {"user": os.environ["FC_USER" + n],
                          "password": os.environ["FC_PASS" + n],
                          "proxy": sess.url, "fingerprint": None,
-                         "session_file": None}
+                         "session_file": None,
+                         "tg_token": os.environ["FC_TG_TOKEN"],
+                         "tg_chat": os.environ["FC_TG_CHAT"]}
                   p = Panel(proxy=sess.url)
                   M.login(p, cfg)
-                  print("\n########## 账号%s 的 me() ##########" % (n or "1"))
-                  me = p.me()
-                  print(json.dumps({k: me.get(k) for k in
-                                    ("id", "username", "titles")},
-                                   ensure_ascii=False)[:400])
-                  print("--- /user/telegram ---")
-                  try:
-                      print(json.dumps(p.get("/api/panel/user/telegram"),
-                                       ensure_ascii=False, indent=2)[:1200])
-                  except Exception as e:
-                      print("  失败：%s" % e)
+                  insts = p.instances()
+                  name = insts[0].get("name") if insts else ""
+                  full = p.instance(insts[0]["uuid"]) if insts else {}
+                  spec = M.spec_label(full, full.get("subscription")) if full else ""
+                  badges = M.account_badges(p)
+                  cfg["_instance_name"] = name
+                  cfg["_instance_spec"] = spec
+                  cfg["_phase_label"] = "实例重建"
+                  cfg["_titles"] = badges["titles"]
+                  cfg["_tg_link"] = badges["tg_link"]
+                  cfg["_resources"] = M.collect_resources(p)
+                  print("\n########## 账号%s（tg=%s）##########"
+                        % (n or "1", badges["tg_link"] or "未绑定"))
+                  print(build_report(ok=True, account=cfg["user"], instance=name,
+                                     spec=spec, ip_info=probe_ip(sess.url),
+                                     type_label="实例重建", titles=badges["titles"],
+                                     account_link=badges["tg_link"],
+                                     resources=cfg["_resources"]))
+                  if n == "_3":
+                      print("\n--- 真发一条 ---")
+                      notify_run(cfg, ok=True, ip_info=probe_ip(sess.url))
           finally:
               sess.stop()
           PY
