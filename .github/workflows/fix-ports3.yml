@@ -32,20 +32,15 @@ jobs:
           mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
           chmod +x ./sing-box
 
-      - name: 补齐端口段并出报告
+      - name: 看 sharp 现在的端口状态
         working-directory: fc-private
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import json, os
           import firadio_maintain as M
-          from firadio_panel import Panel, PanelError
+          from firadio_panel import Panel
           from firadio_proxy import ProxySession
-
-          def rules(p, uuid):
-              d = p.instance(uuid)
-              return [(r.get("protocol"), r.get("port"), r.get("span"))
-                      for r in (d.get("ports") or [])]
 
           sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
           sess.start()
@@ -58,34 +53,33 @@ jobs:
               uuid = inst["uuid"]
               print("实例：%s (%s)" % (inst.get("name"), uuid))
 
-              raw = p.port_blocks()
-              print("=== /port-blocks 原文 ===")
-              for b in raw.get("blocks") or []:
-                  print("  %s" % json.dumps(b, ensure_ascii=False))
+              for b in p.port_blocks().get("blocks") or []:
+                  print("号段 %s %s-%s free=%s paid_until=%s used=%s"
+                        % (b["id"], b["start"], b["start"] + b["size"] - 1,
+                           b.get("free"), b.get("paid_until"), b.get("used")))
+                  for r in b.get("ranges") or []:
+                      print("  段  %s %s-%s  %s"
+                            % (r.get("protocol"), r.get("start"),
+                               r.get("start") + r.get("span", 1) - 1,
+                               r.get("instance_name")))
+                  for r in b.get("ports") or []:
+                      print("  单  %s %s -> %s  %s"
+                            % (r.get("protocol"), r.get("port"),
+                               r.get("target_port"), r.get("instance_name")))
 
-              print("=== 现有规则 ===")
-              for r in rules(p, uuid):
-                  print("  %s" % (r,))
+              print("stable_port_blocks：%s" % (M.stable_port_blocks(p),))
+              cands = M.stable_port_candidates(p)
+              print("候选端口前 5 个：%s（共 %d）" % (cands[:5], len(cands)))
 
-              blocks = M.stable_port_blocks(p)
-              print("账号级号段：%s" % (blocks,))
-              target = None
-              for b in raw.get("blocks") or []:
-                  if int(b.get("start") or 0) <= 12700 < int(b.get("start") or 0) + int(b.get("size") or 0):
-                      target = b
-              if not target:
-                  raise SystemExit("没找到含 12700 的号段")
+              print("再跑一次 add_ports（应该什么都不用加）：")
+              print("  %s" % (M.add_ports(p, uuid, 5, 2, total_ports=20),))
 
-              have = {(r[0], r[1]) for r in rules(p, uuid)}
-              if ("both", 12700) in have:
-                  print("12700-12709 已经在规则里了")
-              else:
-                  print("映射 12700-12709（both）…")
-                  print(p.map_block(uuid, target["id"], "both",
-                                    [{"start": 12700, "span": 10}]))
-              print("=== 补齐后规则 ===")
-              for r in rules(p, uuid):
-                  print("  %s" % (r,))
+              d = p.instance(uuid)
+              print("实例详情里和端口有关的键：%s"
+                    % [k for k in d if "port" in k.lower()])
+              for k in d:
+                  if "port" in k.lower():
+                      print("  %s = %s" % (k, json.dumps(d[k], ensure_ascii=False)[:400]))
           finally:
               sess.stop()
           PY
