@@ -1,0 +1,79 @@
+name: 🔧 补齐 sharp 的端口段（临时）
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PROXY_CONTENT: ${{ secrets.HY2_PROXY_URL }}
+      PRIVATE_REPO: jyucoeng/fc-private
+      REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      FC_USER: ${{ secrets.FC_USER_3 }}
+      FC_PASS: ${{ secrets.FC_PASS_3 }}
+      FC_TG_TOKEN: ${{ secrets.FC_TG_TOKEN }}
+      FC_TG_CHAT: ${{ secrets.FC_TG_CHAT }}
+    steps:
+      - name: 检出私有仓库
+        run: |
+          set -euo pipefail
+          auth=$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+            clone --depth 1 "https://github.com/${PRIVATE_REPO}.git" fc-private
+
+      - name: 装 sing-box
+        working-directory: fc-private
+        run: |
+          set -euo pipefail
+          SB_VER="1.13.14"
+          wget -q "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-amd64.tar.gz"
+          tar -xzf "sing-box-${SB_VER}-linux-amd64.tar.gz" -C /tmp/
+          mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
+          chmod +x ./sing-box
+
+      - name: 补齐端口段并出报告
+        working-directory: fc-private
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          import firadio_maintain as M
+          from firadio_panel import Panel, PanelError
+          from firadio_proxy import ProxySession
+
+          sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
+          sess.start()
+          try:
+              cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
+                     "proxy": sess.url, "fingerprint": None, "session_file": None,
+                     "ports": (5, 2), "port_span": 20}
+              p = Panel(proxy=sess.url)
+              M.login(p, cfg)
+              inst = p.instances()[0]
+              uuid = inst["uuid"]
+              print("实例：%s (%s)" % (inst.get("name"), uuid))
+
+              blocks = M.stable_port_blocks(p)
+              print("账号级号段：%s" % blocks)
+              for b in blocks:
+                  print("  块 %s  %s-%s  paid_until=%s"
+                        % (b["id"], b["start"], b["start"] + b["size"] - 1,
+                           b.get("paid_until")))
+
+              print("现有规则：")
+              for r in p.ports(uuid).get("ports") or []:
+                  print("  %s %s-%s" % (r.get("protocol"), r.get("port"),
+                                        (r.get("port") or 0) + (r.get("span") or 1) - 1))
+
+              print("补齐（整段映射）：")
+              done = M.add_ports(p, uuid, 5, 2, total_ports=20)
+              print("  本次规则：%s" % (done,))
+
+              print("补齐后规则：")
+              for r in p.ports(uuid).get("ports") or []:
+                  print("  %s %s-%s" % (r.get("protocol"), r.get("port"),
+                                        (r.get("port") or 0) + (r.get("span") or 1) - 1))
+          finally:
+              sess.stop()
+          PY
