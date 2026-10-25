@@ -54,7 +54,7 @@ jobs:
           try:
               p = Panel(proxy=sess.url)
               M.login(p, {"user": user, "password": pwd})
-              d = p.get("/disks")
+              d = p.get("/api/panel/console/disks")
               print("=== GET /disks 顶层键：%s" % (list(d.keys()) if isinstance(d, dict) else type(d)))
               print(json.dumps(d, ensure_ascii=False, indent=2)[:3000])
               disks = (d.get("disks") if isinstance(d, dict) else d) or []
@@ -62,7 +62,7 @@ jobs:
                   did = disk.get("id")
                   print("\n=== 盘 %s 续费条款 ===" % did)
                   try:
-                      print(json.dumps(p.get("/disks/%s/renew-terms" % did),
+                      print(json.dumps(p.get("/api/panel/console/disks/%s/renew-terms" % did),
                                        ensure_ascii=False, indent=2)[:1500])
                   except PanelError as e:
                       print("  条款失败：%s" % e)
