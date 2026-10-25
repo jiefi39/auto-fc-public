@@ -42,38 +42,50 @@ jobs:
           from firadio_panel import Panel, PanelError
           from firadio_proxy import ProxySession
 
+          def rules(p, uuid):
+              d = p.instance(uuid)
+              return [(r.get("protocol"), r.get("port"), r.get("span"))
+                      for r in (d.get("ports") or [])]
+
           sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
           sess.start()
           try:
               cfg = {"user": os.environ["FC_USER"], "password": os.environ["FC_PASS"],
-                     "proxy": sess.url, "fingerprint": None, "session_file": None,
-                     "ports": (5, 2), "port_span": 20}
+                     "proxy": sess.url, "fingerprint": None, "session_file": None}
               p = Panel(proxy=sess.url)
               M.login(p, cfg)
               inst = p.instances()[0]
               uuid = inst["uuid"]
               print("实例：%s (%s)" % (inst.get("name"), uuid))
 
+              raw = p.port_blocks()
+              print("=== /port-blocks 原文 ===")
+              for b in raw.get("blocks") or []:
+                  print("  %s" % json.dumps(b, ensure_ascii=False))
+
+              print("=== 现有规则 ===")
+              for r in rules(p, uuid):
+                  print("  %s" % (r,))
+
               blocks = M.stable_port_blocks(p)
-              print("账号级号段：%s" % blocks)
-              for b in blocks:
-                  print("  块 %s  %s-%s  paid_until=%s"
-                        % (b["id"], b["start"], b["start"] + b["size"] - 1,
-                           b.get("paid_until")))
+              print("账号级号段：%s" % (blocks,))
+              target = None
+              for b in raw.get("blocks") or []:
+                  if int(b.get("start") or 0) <= 12700 < int(b.get("start") or 0) + int(b.get("size") or 0):
+                      target = b
+              if not target:
+                  raise SystemExit("没找到含 12700 的号段")
 
-              print("现有规则：")
-              for r in p.ports(uuid).get("ports") or []:
-                  print("  %s %s-%s" % (r.get("protocol"), r.get("port"),
-                                        (r.get("port") or 0) + (r.get("span") or 1) - 1))
-
-              print("补齐（整段映射）：")
-              done = M.add_ports(p, uuid, 5, 2, total_ports=20)
-              print("  本次规则：%s" % (done,))
-
-              print("补齐后规则：")
-              for r in p.ports(uuid).get("ports") or []:
-                  print("  %s %s-%s" % (r.get("protocol"), r.get("port"),
-                                        (r.get("port") or 0) + (r.get("span") or 1) - 1))
+              have = {(r[0], r[1]) for r in rules(p, uuid)}
+              if ("both", 12700) in have:
+                  print("12700-12709 已经在规则里了")
+              else:
+                  print("映射 12700-12709（both）…")
+                  print(p.map_block(uuid, target["id"], "both",
+                                    [{"start": 12700, "span": 10}]))
+              print("=== 补齐后规则 ===")
+              for r in rules(p, uuid):
+                  print("  %s" % (r,))
           finally:
               sess.stop()
           PY
