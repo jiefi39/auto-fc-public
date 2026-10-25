@@ -34,7 +34,7 @@ jobs:
           mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
           chmod +x ./sing-box
 
-      - name: 打印数据盘条款（只读）
+      - name: 数据盘续费（两个账号都跑）
         working-directory: fc-private
         run: |
           set -euo pipefail
@@ -44,33 +44,45 @@ jobs:
           from firadio_panel import Panel, PanelError
           from firadio_proxy import ProxySession
 
-          which = os.environ["ACCT"]
-          user = os.environ["FC_USER"] if which == "1" else os.environ["FC_USER_2"]
-          pwd = os.environ["FC_PASS"] if which == "1" else os.environ["FC_PASS_2"]
-          print("账号：%s" % which)
-
           sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
           sess.start()
           try:
-              p = Panel(proxy=sess.url)
-              M.login(p, {"user": user, "password": pwd})
-              d = p.get("/api/panel/console/disks")
-              print("=== GET /disks 顶层键：%s" % (list(d.keys()) if isinstance(d, dict) else type(d)))
-              print(json.dumps(d, ensure_ascii=False, indent=2)[:3000])
-              disks = (d.get("disks") if isinstance(d, dict) else d) or []
-              for disk in disks:
-                  did = disk.get("id")
-                  print("\n=== 盘 %s 续费条款 ===" % did)
-                  try:
-                      print(json.dumps(p.get("/api/panel/console/disks/%s/renew-terms" % did),
-                                       ensure_ascii=False, indent=2)[:1500])
-                  except PanelError as e:
-                      print("  条款失败：%s" % e)
+              for which, user, pwd in (("2", os.environ["FC_USER_2"], os.environ["FC_PASS_2"]),
+                                       ("1", os.environ["FC_USER"], os.environ["FC_PASS"])):
+                  print("\n########## 账号 %s ##########" % which)
+                  cfg = {"user": user, "password": pwd, "proxy": sess.url,
+                         "fingerprint": None, "session_file": None,
+                         "port_block_days": 7}
+                  p = Panel(proxy=sess.url)
+                  M.login(p, cfg)
+
+                  def show(tag):
+                      print("%s" % tag)
+                      for d in p.disks().get("disks") or []:
+                          mnt = (d.get("mounts") or [{}])[0]
+                          print("  盘 %s  %s GB  挂 %s  paid_until=%s"
+                                % (d.get("id"), d.get("size_gb"),
+                                   mnt.get("path"), d.get("paid_until")))
+                          try:
+                              t = p.disk_renew_terms(d.get("id"))
+                              print("      免费月数=%d can_renew=%s totals前3=%s"
+                                    % (M.free_renew_months(t), t.get("can_renew"),
+                                       (t.get("totals") or [])[:3]))
+                          except PanelError as e:
+                              print("      条款：%s" % e)
+
+                  show("=== 续之前 ===")
+                  print("--- dry-run ---")
+                  for row in M.renew_disks(p, cfg, dry_run=True):
+                      print("  %s" % (row,))
+                  print("--- 真续 ---")
+                  for row in M.renew_disks(p, cfg):
+                      print("  %s" % (row,))
+                  show("=== 续之后 ===")
           finally:
               sess.stop()
           PY
         env:
-          ACCT: ${{ inputs.acct }}
           FC_USER: ${{ secrets.FC_USER }}
           FC_PASS: ${{ secrets.FC_PASS }}
           FC_USER_2: ${{ secrets.FC_USER_2 }}
