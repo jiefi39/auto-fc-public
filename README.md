@@ -98,6 +98,10 @@ cp .github/workflows/fc-renew.yml .github/workflows/fc-renew-2.yml
 `concurrency` **不用改** —— 用的是 `${{ github.workflow }}`，
 复制出来的文件 `name` 不同，天然互斥，不会互相打断。
 
+`cancel-in-progress: true`：同一个 workflow 来了新的一轮，会顶掉还在跑的那一轮。
+所以手动 Run workflow 能立刻接管，也能用它当中止手段 —— 代价是正在重建的实例
+会被扔在半路（可能停在「已退订、还没重开」），下一轮定时任务看到没有实例会自动补开。
+
 ### 3. 时间怎么错开
 
 cron 是 UTC，+8 小时是北京时间：

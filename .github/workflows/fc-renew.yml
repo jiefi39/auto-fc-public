@@ -76,8 +76,9 @@ jobs:
       # 用 workflow 名做互斥键：复制出来的文件 name 不同，天然各跑各的，
       # 不用手动改这里。
       group: ${{ github.workflow }}
-      # 手动触发不抢占正在跑的定时任务——那会把正在重建的实例打断在半路。
-      cancel-in-progress: false
+      # 新的一轮直接顶掉还在跑的那一轮（手动点了 Run workflow 也算），
+      # 想中止当前这轮就再点一次或者点 Cancel。
+      cancel-in-progress: true
     env:
       # ── 凭据（③④ 每个账号改这里；Secret 里对应 FC_USER_2 / FC_PASS_2）──
       FC_USER: ${{ secrets.FC_USER }}
