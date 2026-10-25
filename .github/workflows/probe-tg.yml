@@ -1,0 +1,79 @@
+name: 🔍 预览新报告（临时）
+on:
+  workflow_dispatch:
+
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PROXY_CONTENT: ${{ secrets.HY2_PROXY_URL }}
+      PRIVATE_REPO: jyucoeng/fc-private
+      REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      FC_TG_TOKEN: ${{ secrets.FC_TG_TOKEN }}
+      FC_TG_CHAT: ${{ secrets.FC_TG_CHAT }}
+      FC_USER: ${{ secrets.FC_USER }}
+      FC_PASS: ${{ secrets.FC_PASS }}
+      FC_USER_2: ${{ secrets.FC_USER_2 }}
+      FC_PASS_2: ${{ secrets.FC_PASS_2 }}
+      FC_USER_3: ${{ secrets.FC_USER_3 }}
+      FC_PASS_3: ${{ secrets.FC_PASS_3 }}
+    steps:
+      - name: 检出私有仓库
+        run: |
+          set -euo pipefail
+          auth=$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+            clone --depth 1 "https://github.com/${PRIVATE_REPO}.git" fc-private
+
+      - name: 装 sing-box
+        working-directory: fc-private
+        run: |
+          set -euo pipefail
+          SB_VER="1.13.14"
+          wget -q "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-amd64.tar.gz"
+          tar -xzf "sing-box-${SB_VER}-linux-amd64.tar.gz" -C /tmp/
+          mv "/tmp/sing-box-${SB_VER}-linux-amd64/sing-box" ./sing-box
+          chmod +x ./sing-box
+
+      - name: 打印三个账号的报告
+        working-directory: fc-private
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import firadio_maintain as M
+          from firadio_panel import Panel
+          from firadio_notify import build_report, notify_run, probe_ip
+          from firadio_proxy import ProxySession
+
+          sess = ProxySession(content=os.environ["PROXY_CONTENT"], port=10808)
+          sess.start()
+          try:
+              for n in ("", "_2", "_3"):
+                  cfg = {"user": os.environ["FC_USER" + n],
+                         "password": os.environ["FC_PASS" + n],
+                         "proxy": sess.url, "fingerprint": None,
+                         "session_file": None,
+                         "tg_token": os.environ["FC_TG_TOKEN"],
+                         "tg_chat": os.environ["FC_TG_CHAT"]}
+                  p = Panel(proxy=sess.url)
+                  M.login(p, cfg)
+                  insts = p.instances()
+                  name = insts[0].get("name") if insts else ""
+                  full = p.instance(insts[0]["uuid"]) if insts else {}
+                  spec = M.spec_label(full, full.get("subscription")) if full else ""
+                  cfg["_instance_name"] = name
+                  cfg["_instance_spec"] = spec
+                  cfg["_resources"] = M.collect_resources(p)
+                  print("\n########## 账号%s ##########" % (n or "1"))
+                  print(build_report(ok=True, account=cfg["user"],
+                                     instance=name, spec=spec,
+                                     ip_info=probe_ip(sess.url),
+                                     resources=cfg["_resources"]))
+                  if n == "_3":
+                      print("\n--- 真发一条 ---")
+                      notify_run(cfg, ok=True, ip_info=probe_ip(sess.url))
+          finally:
+              sess.stop()
+          PY
