@@ -55,7 +55,16 @@ jobs:
                   p = Panel(proxy=sess.url)
                   M.login(p, cfg)
                   print("\n########## 账号%s 的 me() ##########" % (n or "1"))
-                  print(json.dumps(p.me(), ensure_ascii=False, indent=2)[:2500])
+                  me = p.me()
+                  print(json.dumps({k: me.get(k) for k in
+                                    ("id", "username", "titles")},
+                                   ensure_ascii=False)[:400])
+                  print("--- /user/telegram ---")
+                  try:
+                      print(json.dumps(p.get("/api/panel/user/telegram"),
+                                       ensure_ascii=False, indent=2)[:1200])
+                  except Exception as e:
+                      print("  失败：%s" % e)
           finally:
               sess.stop()
           PY
