@@ -14,6 +14,8 @@ jobs:
       FC_PASS: ${{ secrets.FC_PASS }}
       FC_USER_2: ${{ secrets.FC_USER_2 }}
       FC_PASS_2: ${{ secrets.FC_PASS_2 }}
+      FC_TG_TOKEN: ${{ secrets.FC_TG_TOKEN }}
+      FC_TG_CHAT: ${{ secrets.FC_TG_CHAT }}
       FC_USER_3: ${{ secrets.FC_USER_3 }}
       FC_PASS_3: ${{ secrets.FC_PASS_3 }}
     steps:
